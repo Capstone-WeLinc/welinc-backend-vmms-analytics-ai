@@ -1,0 +1,37 @@
+{
+  "name": "welinc-backend-vmms-analytics-ai",
+  "version": "1.0.0",
+  "description": "Standalone VMMS analytics and AI services backed by DuckDB and pgvector",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.19 <21"
+  },
+  "scripts": {
+    "build": "nest build --webpack false",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "migrate": "node -r ts-node/register/transpile-only ./scripts/migrate.ts",
+    "migrate:seed": "node -r ts-node/register/transpile-only ./scripts/migrate-analytics.ts"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.5.4-r.1",
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/platform-express": "^11.0.1",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "pg": "^8.22.0",
+    "prisma": "^7.9.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@types/node": "^20.19.0",
+    "ts-loader": "^9.5.2",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.7.3"
+  }
+}
