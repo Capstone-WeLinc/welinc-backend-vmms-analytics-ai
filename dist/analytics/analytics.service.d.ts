@@ -5,6 +5,9 @@ export declare class AnalyticsService implements OnModuleDestroy {
     private instance;
     private connection;
     private connecting;
+    /** AI insights cache to minimize Gemini API calls (free-tier quota is very limited) */
+    private aiInsightsCache;
+    private readonly AI_CACHE_TTL_MS;
     constructor();
     private resolveDatabasePath;
     getHealth(): {

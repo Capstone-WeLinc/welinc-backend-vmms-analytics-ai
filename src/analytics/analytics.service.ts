@@ -12,6 +12,10 @@ export class AnalyticsService implements OnModuleDestroy {
   private connection: DuckDBConnection | null = null;
   private connecting: Promise<DuckDBConnection> | null = null;
 
+  /** AI insights cache to minimize Gemini API calls (free-tier quota is very limited) */
+  private aiInsightsCache: { text: string; timestamp: number } | null = null;
+  private readonly AI_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
   constructor() {
     console.log('[AnalyticsDataMart] Starting service');
     console.log('[AnalyticsDataMart] current working directory:', process.cwd());
@@ -475,6 +479,14 @@ export class AnalyticsService implements OnModuleDestroy {
   }
 
   async getAiInsights() {
+    // Return cached response if fresh (protects free-tier quota)
+    if (
+      this.aiInsightsCache &&
+      Date.now() - this.aiInsightsCache.timestamp < this.AI_CACHE_TTL_MS
+    ) {
+      return this.aiInsightsCache.text;
+    }
+
     const [overview, alertsResult, vehicleKpis, forecast, anomalies, trends] = await Promise.all([
       this.getOverview(),
       this.getAlerts(),
@@ -485,61 +497,13 @@ export class AnalyticsService implements OnModuleDestroy {
     ]);
 
     const totalSchedules = this.toNumber(overview.snapshot.totalSchedules);
-    const overdueSchedules = this.toNumber(overview.snapshot.overdueSchedules);
-    const dueWithin7Days = this.toNumber(overview.snapshot.dueWithin7Days);
-    const pendingSchedules = this.toNumber(overview.snapshot.pendingSchedules);
     const totalVehicles = this.toNumber(overview.snapshot.totalVehicles);
-    const activeMaintenanceVehicles = this.toNumber(overview.snapshot.activeMaintenanceVehicles);
     const totalMaintenanceCost = this.toNumber(overview.snapshot.totalMaintenanceCost);
+    const avgCostPerSchedule = totalSchedules ? Number((totalMaintenanceCost / totalSchedules).toFixed(0)) : 0;
+    const avgCostPerVehicle = totalVehicles ? Number((totalMaintenanceCost / totalVehicles).toFixed(0)) : 0;
 
-    const overdueRate = totalSchedules ? Number(((overdueSchedules / totalSchedules) * 100).toFixed(1)) : 0;
-    const dueSoonRate = totalSchedules ? Number(((dueWithin7Days / totalSchedules) * 100).toFixed(1)) : 0;
-    const pendingRate = totalSchedules ? Number(((pendingSchedules / totalSchedules) * 100).toFixed(1)) : 0;
-    const activeFleetRate = totalVehicles ? Number(((activeMaintenanceVehicles / totalVehicles) * 100).toFixed(1)) : 0;
-    const avgCostPerSchedule = totalSchedules ? Number((totalMaintenanceCost / totalSchedules).toFixed(2)) : 0;
-    const avgCostPerVehicle = totalVehicles ? Number((totalMaintenanceCost / totalVehicles).toFixed(2)) : 0;
-
-    const summaryLines = [
-      `Total vehicles: ${overview.snapshot.totalVehicles}`,
-      `Total schedules: ${overview.snapshot.totalSchedules}`,
-      `Pending schedules: ${overview.snapshot.pendingSchedules}`,
-      `Active schedules: ${overview.snapshot.inProgressSchedules}`,
-      `Overdue schedules: ${overview.snapshot.overdueSchedules}`,
-      `Completed schedules: ${overview.snapshot.completedSchedules}`,
-      `Due within 7 days: ${overview.snapshot.dueWithin7Days}`,
-      `Average odometer: ${overview.snapshot.averageOdometer}`,
-      `Total maintenance cost: ${overview.snapshot.totalMaintenanceCost}`,
-      `Average cost per schedule: ${avgCostPerSchedule}`,
-      `Average cost per vehicle: ${avgCostPerVehicle}`,
-      `Overdue rate: ${overdueRate}%`,
-      `Due soon rate: ${dueSoonRate}%`,
-      `Pending rate: ${pendingRate}%`,
-      `Active maintenance fleet rate: ${activeFleetRate}%`,
-      `Completion rate: ${overview.snapshot.completionRate}%`,
-      `Fleet performance: ${overview.snapshot.fleetPerformance}%`,
-    ];
-
-    const topStatuses = (overview.statusBreakdown || [])
-      .slice(0, 4)
-      .map((row) => {
-        const percentage = typeof row.percentage === 'number'
-          ? row.percentage.toFixed(1)
-          : String(row.percentage ?? 'n/a');
-        return `${row.status}: ${row.scheduleCount} (${percentage}%)`;
-      })
-      .join(', ');
-
-    const alertCounts: Record<string, number> = { HIGH: 0, MEDIUM: 0, LOW: 0, OTHER: 0 };
-    for (const alert of alertsResult.alerts || []) {
-      const severity = String(alert.severity ?? 'OTHER').toUpperCase();
-      alertCounts[severity] = (alertCounts[severity] ?? 0) + 1;
-    }
-
-    const riskCounts: Record<string, number> = { HIGH: 0, MEDIUM: 0, LOW: 0, OTHER: 0 };
-    for (const vehicle of vehicleKpis.vehicles || []) {
-      const risk = String(vehicle.riskLevel ?? 'OTHER').toUpperCase();
-      riskCounts[risk] = (riskCounts[risk] ?? 0) + 1;
-    }
+    const s = overview.snapshot;
+    const fmt = (n: number) => n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n}`;
 
     const topAlerts = (alertsResult.alerts || [])
       .slice(0, 3)
@@ -551,42 +515,47 @@ export class AnalyticsService implements OnModuleDestroy {
       .map((vehicle) => `${vehicle.plateNumber} (${vehicle.riskLevel}, ${vehicle.overdueSchedules} overdue)`)
       .join('; ');
 
+    const alertCounts: Record<string, number> = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+    for (const alert of alertsResult.alerts || []) {
+      const sev = String(alert.severity ?? 'LOW').toUpperCase();
+      alertCounts[sev] = (alertCounts[sev] ?? 0) + 1;
+    }
+
+    const riskCounts: Record<string, number> = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+    for (const vehicle of vehicleKpis.vehicles || []) {
+      const risk = String(vehicle.riskLevel ?? 'LOW').toUpperCase();
+      riskCounts[risk] = (riskCounts[risk] ?? 0) + 1;
+    }
+
     const latestTrend = overview.monthlyTrend?.[overview.monthlyTrend.length - 1];
-    const trendSummary = latestTrend
-      ? `Latest month (${latestTrend.monthKey}) scheduled ${latestTrend.scheduledCount}, completed ${latestTrend.completedCount}, active ${latestTrend.activeCount}, overdue ${latestTrend.overdueCount}, cost ${latestTrend.maintenanceCost}`
-      : 'No monthly trend data available.';
+    const trendLine = latestTrend
+      ? `Trend (${latestTrend.monthKey}): ${latestTrend.scheduledCount} sched, ${latestTrend.completedCount} done, ${latestTrend.activeCount} act, ${latestTrend.overdueCount} overdue, cost ${fmt(this.toNumber(latestTrend.maintenanceCost))}`
+      : '';
 
     const anomaliesText = [
-      ...(anomalies.repeatedFailures || []).slice(0, 3).map((r: any) => `Repeated: ${r.vehiclePlate} has ${r.incidentCount} instances of ${r.maintenanceTitle}`),
-      ...(anomalies.missingDates || []).slice(0, 3).map((m: any) => `Missing date: ${m.vehiclePlate} schedule ${m.scheduleId} (${m.maintenanceTitle})`),
+      ...(anomalies.repeatedFailures || []).slice(0, 3).map((r: any) => `${r.vehiclePlate} has ${r.incidentCount} ${r.maintenanceTitle}`),
+      ...(anomalies.missingDates || []).slice(0, 2).map((m: any) => `Missing date: ${m.vehiclePlate} (${m.maintenanceTitle})`),
     ].join('; ');
-
-    const forecastText = `Due in 7 days: ${forecast.dueIn7Days || 0}, 30 days: ${forecast.dueIn30Days || 0}, 90 days: ${forecast.dueIn90Days || 0}`;
 
     const trendsText = (trends.topTypes || []).map((t: any) => `${t.maintenanceTitle} (${t.count})`).join(', ');
 
-    const prompt = `Role: Fleet maintenance analyst. Task: Write a concise, actionable report on scheduling, overdue recovery, and resource planning. Use ONLY the provided data. Do not use section titles like "Executive Summary".
-
+    const prompt = `Analyze & report. No thinking.
 Data:
-- Summary: ${summaryLines.join(', ')}
-- Statuses: ${topStatuses || 'N/A'}
-- Trend: ${trendSummary}
-- Alerts: ${topAlerts || 'N/A'}
-- High-risk: ${topVehicles || 'N/A'}
-- Alert counts: H:${alertCounts.HIGH} M:${alertCounts.MEDIUM} L:${alertCounts.LOW}
-- Risk profile: H:${riskCounts.HIGH} M:${riskCounts.MEDIUM} L:${riskCounts.LOW}
-- Forecast: ${forecastText}
-- Anomalies: ${anomaliesText || 'None detected'}
-- Top Maintenance Types: ${trendsText || 'N/A'}
+- Fleet: ${s.totalVehicles} veh (${s.activeMaintenanceVehicles} in maint). Sched: ${s.totalSchedules} (${s.pendingSchedules} pend, ${s.inProgressSchedules} act, ${s.overdueSchedules} overdue, ${s.completedSchedules} done, ${s.dueWithin7Days} due 7d). AvgOdo: ${s.averageOdometer}. Cost: ${fmt(totalMaintenanceCost)} (Avg/Sched: ${fmt(avgCostPerSchedule)}, Avg/Veh: ${fmt(avgCostPerVehicle)}). Perf: ${s.fleetPerformance}%.${trendLine ? `\n- ${trendLine}` : ''}
+- Alerts: ${topAlerts || 'None'} (${alertCounts.HIGH}H/${alertCounts.MEDIUM}M/${alertCounts.LOW}L)
+- Risk: ${topVehicles || 'None'} (${riskCounts.HIGH}H/${riskCounts.MEDIUM}M/${riskCounts.LOW}L)
+- Forecast: 7d:${forecast.dueIn7Days || 0}, 30d:${forecast.dueIn30Days || 0}, 90d:${forecast.dueIn90Days || 0}${anomaliesText ? `\n- Anomalies: ${anomaliesText}` : ''}${trendsText ? `\n- Top: ${trendsText}` : ''}
 
-Output requirements:
-1. Executive summary (2-3 sentences).
-2. Top 3 scheduling risks with data points.
-3. 3 prioritized actions focused on overdue work, adherence, and resources.
-4. 1 monitoring recommendation for next month.`;
+Format:
+1. Summary (2 sentences)
+2. Risks (Top 3 with data)
+3. Actions (3 prioritized: overdue, adherence, resources)
+4. Monitor (1 suggestion)`;
 
     try {
-      return await this.generateGeminiText(prompt);
+      const result = await this.generateGeminiText(prompt);
+      this.aiInsightsCache = { text: result, timestamp: Date.now() };
+      return result;
     } catch (error) {
       const errorDetails = error instanceof Error
         ? error.message || String(error)
@@ -627,7 +596,7 @@ Output requirements:
       'https://generativelanguage.googleapis.com/v1beta'
     ).replace(/\/+$/, '');
 
-    const model = (process.env['GEMINI_MODEL']?.trim() || 'gemini-3.5-flash').replace(
+    const model = (process.env['GEMINI_MODEL']?.trim() || 'gemini-flash-latest').replace(
       /^models\//,
       '',
     );
@@ -637,11 +606,11 @@ Output requirements:
 
   private async generateGeminiText(prompt: string): Promise<string> {
     const { apiKey, apiBaseUrl, model } = this.getGeminiConfig();
+    // Only use models confirmed to have free-tier quota available
     const modelCandidates = [
       model,
-      'gemini-3.5-flash',
       'gemini-flash-latest',
-      'gemini-pro-latest',
+      'gemini-flash-lite-latest',
     ].filter((candidate, index, arr) => candidate && arr.indexOf(candidate) === index);
 
     let lastError: Error | null = null;
@@ -704,10 +673,10 @@ Output requirements:
         },
       ],
       generationConfig: {
-        temperature: 0.3,
+        temperature: 0.2,
         topP: 0.95,
         topK: 40,
-        maxOutputTokens: 400,
+        maxOutputTokens: 2500,
       },
     });
 
@@ -716,8 +685,8 @@ Output requirements:
       prompt: {
         text: prompt,
       },
-      temperature: 0.3,
-      maxOutputTokens: 400,
+      temperature: 0.2,
+      maxOutputTokens: 2500,
     });
 
     const requestOptions = {
