@@ -1,15 +1,14 @@
 import { OnModuleDestroy } from '@nestjs/common';
+import { DuckDbDataMartService } from './duckdb-datamart.service';
 type DataMartRow = Record<string, unknown>;
 export declare class AnalyticsService implements OnModuleDestroy {
-    private readonly databasePath;
-    private instance;
-    private connection;
-    private connecting;
+    private readonly dataMartService;
     /** AI insights cache to minimize Gemini API calls (free-tier quota is very limited) */
     private aiInsightsCache;
     private readonly AI_CACHE_TTL_MS;
-    constructor();
-    private resolveDatabasePath;
+    /** Shared in-flight promise — concurrent callers await the same Gemini call */
+    private aiInsightsBuildPromise;
+    constructor(dataMartService: DuckDbDataMartService);
     getHealth(): {
         status: string;
         service: string;
@@ -105,6 +104,7 @@ export declare class AnalyticsService implements OnModuleDestroy {
         schedules: DataMartRow[];
     }>;
     getAiInsights(): Promise<string>;
+    private buildAndCacheAiInsights;
     private getGeminiConfig;
     private generateGeminiText;
     private generateGeminiTextForModel;
@@ -115,7 +115,10 @@ export declare class AnalyticsService implements OnModuleDestroy {
     private query;
     private withDataMart;
     onModuleDestroy(): Promise<void>;
-    private getConnection;
+    /**
+     * Reset cached DuckDB connection in shared DuckDbDataMartService.
+     */
+    resetConnection(): void;
     private ensurePreparedData;
 }
 export {};

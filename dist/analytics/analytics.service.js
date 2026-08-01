@@ -8,52 +8,21 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AnalyticsService = void 0;
-const promises_1 = require("node:fs/promises");
-const node_path_1 = __importDefault(require("node:path"));
 const common_1 = require("@nestjs/common");
-const node_api_1 = require("@duckdb/node-api");
+const duckdb_datamart_service_1 = require("./duckdb-datamart.service");
 let AnalyticsService = class AnalyticsService {
-    databasePath = this.resolveDatabasePath();
-    instance = null;
-    connection = null;
-    connecting = null;
+    dataMartService;
     /** AI insights cache to minimize Gemini API calls (free-tier quota is very limited) */
     aiInsightsCache = null;
     AI_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-    constructor() {
+    /** Shared in-flight promise — concurrent callers await the same Gemini call */
+    aiInsightsBuildPromise = null;
+    constructor(dataMartService) {
+        this.dataMartService = dataMartService;
         console.log('[AnalyticsDataMart] Starting service');
         console.log('[AnalyticsDataMart] current working directory:', process.cwd());
-        console.log('[AnalyticsDataMart] resolved DuckDB path:', this.databasePath);
-    }
-    resolveDatabasePath() {
-        const configuredPath = process.env['DUCKDB_PATH']?.trim();
-        if (configuredPath) {
-            return node_path_1.default.resolve(configuredPath);
-        }
-        const candidates = [
-            node_path_1.default.resolve(process.cwd(), 'database', 'vmms_datamart.duckdb'),
-            node_path_1.default.resolve(process.cwd(), '..', 'database', 'vmms_datamart.duckdb'),
-            node_path_1.default.resolve(process.cwd(), '..', '..', 'database', 'vmms_datamart.duckdb'),
-            node_path_1.default.resolve(process.cwd(), '..', 'vmms-backend', 'database', 'vmms_datamart.duckdb'),
-            node_path_1.default.resolve(process.cwd(), '..', 'welinc-backend-vmms', 'database', 'vmms_datamart.duckdb'),
-            node_path_1.default.resolve(process.cwd(), '..', 'welinc-backend-vmms-analytics-ai', 'database', 'vmms_datamart.duckdb'),
-        ];
-        for (const candidate of candidates) {
-            try {
-                const { accessSync } = require('node:fs');
-                accessSync(candidate);
-                return candidate;
-            }
-            catch {
-                // try next candidate
-            }
-        }
-        return candidates[0];
     }
     getHealth() {
         return {
@@ -409,11 +378,32 @@ let AnalyticsService = class AnalyticsService {
         });
     }
     async getAiInsights() {
-        // Return cached response if fresh (protects free-tier quota)
-        if (this.aiInsightsCache &&
-            Date.now() - this.aiInsightsCache.timestamp < this.AI_CACHE_TTL_MS) {
+        const isFresh = this.aiInsightsCache &&
+            Date.now() - this.aiInsightsCache.timestamp < this.AI_CACHE_TTL_MS;
+        // Return fresh cache immediately — no work needed.
+        if (isFresh) {
             return this.aiInsightsCache.text;
         }
+        // Stale-while-revalidate: stale cache exists — return it instantly and
+        // kick off a background refresh (only one at a time).
+        if (this.aiInsightsCache) {
+            if (!this.aiInsightsBuildPromise) {
+                this.aiInsightsBuildPromise = this.buildAndCacheAiInsights().finally(() => {
+                    this.aiInsightsBuildPromise = null;
+                });
+            }
+            return this.aiInsightsCache.text;
+        }
+        // Cold start: no cache at all — all concurrent callers share the same
+        // in-flight promise so only one Gemini request is made.
+        if (!this.aiInsightsBuildPromise) {
+            this.aiInsightsBuildPromise = this.buildAndCacheAiInsights().finally(() => {
+                this.aiInsightsBuildPromise = null;
+            });
+        }
+        return this.aiInsightsBuildPromise;
+    }
+    async buildAndCacheAiInsights() {
         const [overview, alertsResult, vehicleKpis, forecast, anomalies, trends] = await Promise.all([
             this.getOverview(),
             this.getAlerts(),
@@ -482,10 +472,15 @@ Format:
                 if (status === common_1.HttpStatus.TOO_MANY_REQUESTS ||
                     status === common_1.HttpStatus.SERVICE_UNAVAILABLE) {
                     console.warn('[AnalyticsDataMart] Gemini AI unavailable. Returning fallback AI summary.', errorDetails);
+                    // Keep serving the stale cache rather than replacing with an error message
+                    if (this.aiInsightsCache)
+                        return this.aiInsightsCache.text;
                     return 'AI insights are currently unavailable because the Gemini service is not available. Please try again later.';
                 }
             }
             console.error('[AnalyticsDataMart] Unexpected Gemini error in getAiInsights', errorDetails);
+            if (this.aiInsightsCache)
+                return this.aiInsightsCache.text;
             return 'AI insights are currently unavailable due to an internal service error. Please try again later.';
         }
     }
@@ -761,17 +756,11 @@ Format:
         return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
     }
     async query(connection, sql) {
-        const reader = await connection.runAndReadAll(sql);
-        return reader
-            .getRowObjectsJS()
-            .map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [
-            key,
-            typeof value === 'bigint' ? Number(value) : value,
-        ])));
+        return this.dataMartService.query(sql);
     }
     async withDataMart(action) {
         try {
-            const connection = await this.getConnection();
+            const connection = await this.dataMartService.getConnection();
             return await action(connection);
         }
         catch (error) {
@@ -782,37 +771,13 @@ Format:
         }
     }
     async onModuleDestroy() {
-        this.connection?.closeSync();
-        this.connection = null;
-        this.instance = null;
+        await this.dataMartService.onModuleDestroy();
     }
-    async getConnection() {
-        if (this.connection) {
-            return this.connection;
-        }
-        if (this.connecting) {
-            return await this.connecting;
-        }
-        this.connecting = (async () => {
-            try {
-                await (0, promises_1.mkdir)(node_path_1.default.dirname(this.databasePath), { recursive: true });
-                await (0, promises_1.access)(this.databasePath).catch(() => undefined);
-                this.instance = await node_api_1.DuckDBInstance.create(this.databasePath);
-                this.connection = await this.instance.connect();
-                await this.ensurePreparedData(this.connection);
-                return this.connection;
-            }
-            catch (error) {
-                this.connection?.closeSync();
-                this.connection = null;
-                this.instance = null;
-                throw error;
-            }
-            finally {
-                this.connecting = null;
-            }
-        })();
-        return await this.connecting;
+    /**
+     * Reset cached DuckDB connection in shared DuckDbDataMartService.
+     */
+    resetConnection() {
+        this.dataMartService.resetConnection().catch(() => undefined);
     }
     async ensurePreparedData(connection) {
         await connection.runAndReadAll(`
@@ -910,6 +875,6 @@ Format:
 exports.AnalyticsService = AnalyticsService;
 exports.AnalyticsService = AnalyticsService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [])
+    __metadata("design:paramtypes", [duckdb_datamart_service_1.DuckDbDataMartService])
 ], AnalyticsService);
 //# sourceMappingURL=analytics.service.js.map

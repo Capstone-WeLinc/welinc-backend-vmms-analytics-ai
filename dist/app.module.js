@@ -10,6 +10,8 @@ exports.AppModule = void 0;
 const common_1 = require("@nestjs/common");
 const analytics_controller_1 = require("./analytics/analytics.controller");
 const analytics_service_1 = require("./analytics/analytics.service");
+const sync_service_1 = require("./analytics/sync.service");
+const duckdb_datamart_service_1 = require("./analytics/duckdb-datamart.service");
 const dashboard_controller_1 = require("./analytics/dashboard.controller");
 const maintenance_schedules_controller_1 = require("./analytics/maintenance-schedules.controller");
 let AppModule = class AppModule {
@@ -18,7 +20,7 @@ exports.AppModule = AppModule;
 exports.AppModule = AppModule = __decorate([
     (0, common_1.Module)({
         controllers: [analytics_controller_1.AnalyticsController, dashboard_controller_1.DashboardController, maintenance_schedules_controller_1.MaintenanceSchedulesController],
-        providers: [analytics_service_1.AnalyticsService],
+        providers: [duckdb_datamart_service_1.DuckDbDataMartService, analytics_service_1.AnalyticsService, sync_service_1.SyncService],
     })
 ], AppModule);
 //# sourceMappingURL=app.module.js.map

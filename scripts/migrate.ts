@@ -73,16 +73,10 @@ function maintenanceCost(value: unknown): number {
 
 function analyticsStatus(
   status: MaintenanceStatus,
-  dueDate: Date | null,
-  generatedAt: Date,
+  _dueDate: Date | null,
+  _generatedAt: Date,
 ): MaintenanceStatus {
-  const canBecomeOverdue =
-    status === MaintenanceStatus.PENDING || status === MaintenanceStatus.DUE;
-  return canBecomeOverdue &&
-    dueDate &&
-    dueDate.getTime() < generatedAt.getTime()
-    ? MaintenanceStatus.OVERDUE
-    : status;
+  return status;
 }
 
 function utcMonthKey(date: Date): string {
@@ -497,48 +491,47 @@ async function main(): Promise<void> {
     if (pgvectorEnabled) {
       const sources: EmbeddingSource[] = [];
       for (const schedule of schedules) {
-      const vehicle = vehicleById.get(schedule.vehicleId);
-      const content = [
-        vehicle?.plateNumber ?? schedule.vehicleId,
-        schedule.title.trim(),
-        `Trigger: ${schedule.triggerType}`,
-        `Interval: ${schedule.intervalType}`,
-        schedule.assignedMechanic ? `Mechanic: ${schedule.assignedMechanic}` : null,
-        `Status: ${schedule.status}`,
-        schedule.startReferenceDate
-          ? `Due: ${schedule.startReferenceDate.toISOString()}`
-          : null,
-      ]
-        .filter((part): part is string => Boolean(part))
-        .join(' | ');
-      if (content) {
-        sources.push({
-          scheduleId: schedule.id,
-          templateId: null,
-          sourceType: SOURCE_TYPES.schedule,
-          content,
-        });
+        const vehicle = vehicleById.get(schedule.vehicleId);
+        const content = [
+          vehicle?.plateNumber ?? schedule.vehicleId,
+          schedule.title.trim(),
+          `Trigger: ${schedule.triggerType}`,
+          `Interval: ${schedule.intervalType}`,
+          schedule.assignedMechanic ? `Mechanic: ${schedule.assignedMechanic}` : null,
+          `Status: ${schedule.status}`,
+          schedule.startReferenceDate
+            ? `Due: ${schedule.startReferenceDate.toISOString()}`
+            : null,
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join(' | ');
+        if (content) {
+          sources.push({
+            scheduleId: schedule.id,
+            templateId: null,
+            sourceType: SOURCE_TYPES.schedule,
+            content,
+          });
+        }
       }
-    }
-    for (const template of templates) {
-      const content = [
-        template.type,
-        ...template.items.map((item) => item.text),
-      ]
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join('\n');
-      if (content) {
-        sources.push({
-          scheduleId: null,
-          templateId: template.id,
-          sourceType: SOURCE_TYPES.template,
-          content,
-        });
+      for (const template of templates) {
+        const content = [
+          template.type,
+          ...template.items.map((item) => item.text),
+        ]
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .join('\n');
+        if (content) {
+          sources.push({
+            scheduleId: null,
+            templateId: template.id,
+            sourceType: SOURCE_TYPES.template,
+            content,
+          });
+        }
       }
-    }
 
-    if (pgvectorEnabled) {
       console.log('Generating embeddings...');
       const embeddingBatchSize = positiveInteger(
         process.env['EMBEDDING_BATCH_SIZE'],

@@ -1,9 +1,19 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Post } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
+import { SyncService } from './sync.service';
 
 @Controller()
 export class AnalyticsController {
-  constructor(private readonly analyticsService: AnalyticsService) {}
+  constructor(
+    private readonly analyticsService: AnalyticsService,
+    private readonly syncService: SyncService,
+  ) {}
+
+  @Post('sync')
+  @Post('analytics/sync')
+  async triggerSync() {
+    return this.syncService.syncNow();
+  }
 
   @Get('health')
   getHealth() {

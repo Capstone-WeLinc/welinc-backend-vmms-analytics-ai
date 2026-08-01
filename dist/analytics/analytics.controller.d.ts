@@ -1,7 +1,13 @@
 import { AnalyticsService } from './analytics.service';
+import { SyncService } from './sync.service';
 export declare class AnalyticsController {
     private readonly analyticsService;
-    constructor(analyticsService: AnalyticsService);
+    private readonly syncService;
+    constructor(analyticsService: AnalyticsService, syncService: SyncService);
+    triggerSync(): Promise<{
+        success: boolean;
+        message: string;
+    }>;
     getHealth(): {
         status: string;
         service: string;

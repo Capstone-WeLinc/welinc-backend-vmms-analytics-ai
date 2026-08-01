@@ -12,10 +12,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AnalyticsController = void 0;
 const common_1 = require("@nestjs/common");
 const analytics_service_1 = require("./analytics.service");
+const sync_service_1 = require("./sync.service");
 let AnalyticsController = class AnalyticsController {
     analyticsService;
-    constructor(analyticsService) {
+    syncService;
+    constructor(analyticsService, syncService) {
         this.analyticsService = analyticsService;
+        this.syncService = syncService;
+    }
+    async triggerSync() {
+        return this.syncService.syncNow();
     }
     getHealth() {
         return this.analyticsService.getHealth();
@@ -66,6 +72,13 @@ let AnalyticsController = class AnalyticsController {
     }
 };
 exports.AnalyticsController = AnalyticsController;
+__decorate([
+    (0, common_1.Post)('sync'),
+    (0, common_1.Post)('analytics/sync'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], AnalyticsController.prototype, "triggerSync", null);
 __decorate([
     (0, common_1.Get)('health'),
     __metadata("design:type", Function),
@@ -134,6 +147,7 @@ __decorate([
 ], AnalyticsController.prototype, "getReportLegacy", null);
 exports.AnalyticsController = AnalyticsController = __decorate([
     (0, common_1.Controller)(),
-    __metadata("design:paramtypes", [analytics_service_1.AnalyticsService])
+    __metadata("design:paramtypes", [analytics_service_1.AnalyticsService,
+        sync_service_1.SyncService])
 ], AnalyticsController);
 //# sourceMappingURL=analytics.controller.js.map

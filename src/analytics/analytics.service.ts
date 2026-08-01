@@ -1,53 +1,20 @@
-import { access, mkdir } from 'node:fs/promises';
-import path from 'node:path';
 import { HttpException, HttpStatus, Injectable, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
-import { DuckDBConnection, DuckDBInstance } from '@duckdb/node-api';
+import { DuckDBConnection } from '@duckdb/node-api';
+import { DuckDbDataMartService } from './duckdb-datamart.service';
 
 type DataMartRow = Record<string, unknown>;
 
 @Injectable()
 export class AnalyticsService implements OnModuleDestroy {
-  private readonly databasePath = this.resolveDatabasePath();
-  private instance: DuckDBInstance | null = null;
-  private connection: DuckDBConnection | null = null;
-  private connecting: Promise<DuckDBConnection> | null = null;
-
   /** AI insights cache to minimize Gemini API calls (free-tier quota is very limited) */
   private aiInsightsCache: { text: string; timestamp: number } | null = null;
   private readonly AI_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+  /** Shared in-flight promise — concurrent callers await the same Gemini call */
+  private aiInsightsBuildPromise: Promise<string> | null = null;
 
-  constructor() {
+  constructor(private readonly dataMartService: DuckDbDataMartService) {
     console.log('[AnalyticsDataMart] Starting service');
     console.log('[AnalyticsDataMart] current working directory:', process.cwd());
-    console.log('[AnalyticsDataMart] resolved DuckDB path:', this.databasePath);
-  }
-
-  private resolveDatabasePath(): string {
-    const configuredPath = process.env['DUCKDB_PATH']?.trim();
-    if (configuredPath) {
-      return path.resolve(configuredPath);
-    }
-
-    const candidates = [
-      path.resolve(process.cwd(), 'database', 'vmms_datamart.duckdb'),
-      path.resolve(process.cwd(), '..', 'database', 'vmms_datamart.duckdb'),
-      path.resolve(process.cwd(), '..', '..', 'database', 'vmms_datamart.duckdb'),
-      path.resolve(process.cwd(), '..', 'vmms-backend', 'database', 'vmms_datamart.duckdb'),
-      path.resolve(process.cwd(), '..', 'welinc-backend-vmms', 'database', 'vmms_datamart.duckdb'),
-      path.resolve(process.cwd(), '..', 'welinc-backend-vmms-analytics-ai', 'database', 'vmms_datamart.duckdb'),
-    ];
-
-    for (const candidate of candidates) {
-      try {
-        const { accessSync } = require('node:fs');
-        accessSync(candidate);
-        return candidate;
-      } catch {
-        // try next candidate
-      }
-    }
-
-    return candidates[0];
   }
 
   getHealth() {
@@ -479,14 +446,37 @@ export class AnalyticsService implements OnModuleDestroy {
   }
 
   async getAiInsights() {
-    // Return cached response if fresh (protects free-tier quota)
-    if (
+    const isFresh =
       this.aiInsightsCache &&
-      Date.now() - this.aiInsightsCache.timestamp < this.AI_CACHE_TTL_MS
-    ) {
+      Date.now() - this.aiInsightsCache.timestamp < this.AI_CACHE_TTL_MS;
+
+    // Return fresh cache immediately — no work needed.
+    if (isFresh) {
+      return this.aiInsightsCache!.text;
+    }
+
+    // Stale-while-revalidate: stale cache exists — return it instantly and
+    // kick off a background refresh (only one at a time).
+    if (this.aiInsightsCache) {
+      if (!this.aiInsightsBuildPromise) {
+        this.aiInsightsBuildPromise = this.buildAndCacheAiInsights().finally(() => {
+          this.aiInsightsBuildPromise = null;
+        });
+      }
       return this.aiInsightsCache.text;
     }
 
+    // Cold start: no cache at all — all concurrent callers share the same
+    // in-flight promise so only one Gemini request is made.
+    if (!this.aiInsightsBuildPromise) {
+      this.aiInsightsBuildPromise = this.buildAndCacheAiInsights().finally(() => {
+        this.aiInsightsBuildPromise = null;
+      });
+    }
+    return this.aiInsightsBuildPromise;
+  }
+
+  private async buildAndCacheAiInsights(): Promise<string> {
     const [overview, alertsResult, vehicleKpis, forecast, anomalies, trends] = await Promise.all([
       this.getOverview(),
       this.getAlerts(),
@@ -571,6 +561,8 @@ Format:
             '[AnalyticsDataMart] Gemini AI unavailable. Returning fallback AI summary.',
             errorDetails,
           );
+          // Keep serving the stale cache rather than replacing with an error message
+          if (this.aiInsightsCache) return this.aiInsightsCache.text;
           return 'AI insights are currently unavailable because the Gemini service is not available. Please try again later.';
         }
       }
@@ -579,6 +571,7 @@ Format:
         '[AnalyticsDataMart] Unexpected Gemini error in getAiInsights',
         errorDetails,
       );
+      if (this.aiInsightsCache) return this.aiInsightsCache.text;
       return 'AI insights are currently unavailable due to an internal service error. Please try again later.';
     }
   }
@@ -949,24 +942,14 @@ Format:
     connection: DuckDBConnection,
     sql: string,
   ): Promise<DataMartRow[]> {
-    const reader = await connection.runAndReadAll(sql);
-    return reader
-      .getRowObjectsJS()
-      .map((row) =>
-        Object.fromEntries(
-          Object.entries(row).map(([key, value]) => [
-            key,
-            typeof value === 'bigint' ? Number(value) : value,
-          ]),
-        ),
-      );
+    return this.dataMartService.query(sql);
   }
 
   private async withDataMart<T>(
     action: (connection: DuckDBConnection) => Promise<T>,
   ): Promise<T> {
     try {
-      const connection = await this.getConnection();
+      const connection = await this.dataMartService.getConnection();
       return await action(connection);
     } catch (error) {
       if (error instanceof ServiceUnavailableException) throw error;
@@ -978,39 +961,14 @@ Format:
   }
 
   async onModuleDestroy() {
-    this.connection?.closeSync();
-    this.connection = null;
-    this.instance = null;
+    await this.dataMartService.onModuleDestroy();
   }
 
-  private async getConnection(): Promise<DuckDBConnection> {
-    if (this.connection) {
-      return this.connection;
-    }
-
-    if (this.connecting) {
-      return await this.connecting;
-    }
-
-    this.connecting = (async () => {
-      try {
-        await mkdir(path.dirname(this.databasePath), { recursive: true });
-        await access(this.databasePath).catch(() => undefined);
-        this.instance = await DuckDBInstance.create(this.databasePath);
-        this.connection = await this.instance.connect();
-        await this.ensurePreparedData(this.connection);
-        return this.connection as DuckDBConnection;
-      } catch (error) {
-        this.connection?.closeSync();
-        this.connection = null;
-        this.instance = null;
-        throw error;
-      } finally {
-        this.connecting = null;
-      }
-    })();
-
-    return await this.connecting;
+  /**
+   * Reset cached DuckDB connection in shared DuckDbDataMartService.
+   */
+  resetConnection(): void {
+    this.dataMartService.resetConnection().catch(() => undefined);
   }
 
   private async ensurePreparedData(connection: DuckDBConnection): Promise<void> {
