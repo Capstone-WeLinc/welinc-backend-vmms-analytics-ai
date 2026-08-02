@@ -86,6 +86,82 @@ export declare class AnalyticsService implements OnModuleDestroy {
     getExpandedTrends(): Promise<{
         topTypes: DataMartRow[];
     }>;
+    private workOrderAiCache;
+    private workOrderAiBuildPromise;
+    getWorkOrderSummary(): Promise<{
+        dataSource: {
+            type: string;
+            authoritativeFor: string;
+            generatedAt: string;
+            sourceMaxUpdatedAt: {} | null;
+            ageSeconds: number | null;
+            isStale: boolean;
+            maxAgeMinutes: number;
+        };
+        summary: {
+            totalWorkOrders: unknown;
+            openWorkOrders: any;
+            inProgressWorkOrders: any;
+            overdueWorkOrders: any;
+            completedWorkOrders: any;
+            cancelledWorkOrders: any;
+            totalPartsCost: number;
+            totalLaborCost: number;
+            totalCost: number;
+            avgCostPerWorkOrder: number;
+            workOrdersWithCost: number;
+        };
+        statusBreakdown: DataMartRow[];
+        mechanicWorkload: any[];
+        timeline: DataMartRow[];
+        topMaintenanceTypes: DataMartRow[];
+    }>;
+    getMechanicWorkload(): Promise<any[]>;
+    getWorkOrderTimeline(): Promise<DataMartRow[]>;
+    getScheduleWorkOrders(mechanic?: string, status?: string, limit?: string): Promise<{
+        dataSource: {
+            type: string;
+            authoritativeFor: string;
+            generatedAt: string;
+            sourceMaxUpdatedAt: {} | null;
+            ageSeconds: number | null;
+            isStale: boolean;
+            maxAgeMinutes: number;
+        };
+        workOrders: any[];
+    }>;
+    getWorkOrderById(id: string): Promise<{
+        workOrder: any;
+    }>;
+    getWorkOrderRecommendations(id: string, customTitle?: string, customVehicle?: string): Promise<{
+        scheduleId: string;
+        title: string;
+        vehiclePlate: string;
+        workOrder: any;
+        checklist: {
+            stepNumber: number;
+            title: string;
+            description: string;
+            priority: string;
+        }[];
+        aiRecommendations: string;
+    }>;
+    getScheduleWithAi(id: string): Promise<{
+        scheduleId: string;
+        title: string;
+        vehiclePlate: string;
+        workOrder: any;
+        checklist: {
+            stepNumber: number;
+            title: string;
+            description: string;
+            priority: string;
+        }[];
+        aiRecommendations: string;
+    }>;
+    getWorkOrderAiInsights(): Promise<string>;
+    private buildAndCacheWorkOrderAiInsights;
+    private getDefaultChecklistSteps;
     getReport(): Promise<{
         dataSource: {
             type: string;

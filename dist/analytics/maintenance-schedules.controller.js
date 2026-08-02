@@ -23,6 +23,12 @@ let MaintenanceSchedulesController = class MaintenanceSchedulesController {
     searchSchedules(query, limit = '6') {
         return this.analyticsService.searchMaintenanceSchedules(query, limit);
     }
+    getSchedule(id) {
+        return this.analyticsService.getScheduleWithAi(id);
+    }
+    getScheduleAi(id) {
+        return this.analyticsService.getScheduleWithAi(id);
+    }
 };
 exports.MaintenanceSchedulesController = MaintenanceSchedulesController;
 __decorate([
@@ -33,6 +39,20 @@ __decorate([
     __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], MaintenanceSchedulesController.prototype, "searchSchedules", null);
+__decorate([
+    (0, common_1.Get)(':id'),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], MaintenanceSchedulesController.prototype, "getSchedule", null);
+__decorate([
+    (0, common_1.Get)(':id/ai'),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], MaintenanceSchedulesController.prototype, "getScheduleAi", null);
 exports.MaintenanceSchedulesController = MaintenanceSchedulesController = __decorate([
     (0, common_1.Controller)('maintenance-schedules'),
     __metadata("design:paramtypes", [analytics_service_1.AnalyticsService])

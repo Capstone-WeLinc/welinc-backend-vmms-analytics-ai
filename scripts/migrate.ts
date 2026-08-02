@@ -52,23 +52,109 @@ function round(value: number, decimals = 2): number {
 }
 
 function numericValue(value: unknown): number {
+  if (value === null || value === undefined) return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  if (typeof value !== 'string') return 0;
-  const parsed = Number(value.replace(/[^0-9.-]/g, ''));
+  if (typeof value === 'object') {
+    if (
+      'toNumber' in (value as any) &&
+      typeof (value as any).toNumber === 'function'
+    ) {
+      const num = (value as any).toNumber();
+      return Number.isFinite(num) ? num : 0;
+    }
+  }
+  const str = String(value).trim();
+  if (!str) return 0;
+  const parsed = Number(str.replace(/[^0-9.-]/g, ''));
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** Sum the existing work-order checklist item partsCost fields without changing operational data. */
-function maintenanceCost(value: unknown): number {
+function sumFieldFromObject(value: unknown, targetKeys: string[]): number {
+  if (value === null || value === undefined) return 0;
   if (Array.isArray(value)) {
-    return value.reduce((total, item) => total + maintenanceCost(item), 0);
+    return value.reduce(
+      (total, item) => total + sumFieldFromObject(item, targetKeys),
+      0,
+    );
   }
-  if (!value || typeof value !== 'object') return 0;
+  if (typeof value !== 'object') return 0;
 
-  return Object.entries(value).reduce((total, [key, child]) => {
-    if (key === 'partsCost') return total + numericValue(child);
-    return total + maintenanceCost(child);
-  }, 0);
+  if (
+    ('toNumber' in (value as any) &&
+      typeof (value as any).toNumber === 'function') ||
+    value instanceof Date
+  ) {
+    return 0;
+  }
+
+  let sum = 0;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (targetKeys.includes(key)) {
+      sum += numericValue(child);
+    } else if (child && typeof child === 'object') {
+      sum += sumFieldFromObject(child, targetKeys);
+    }
+  }
+  return sum;
+}
+
+function schedulePartsCost(schedule: {
+  partsCost?: unknown;
+  workOrderProgress?: unknown;
+}): number {
+  const parts = numericValue(schedule.partsCost);
+  if (parts > 0) return parts;
+
+  if (schedule.workOrderProgress) {
+    const fromJson = sumFieldFromObject(schedule.workOrderProgress, [
+      'partsCost',
+      'parts_cost',
+    ]);
+    if (fromJson > 0) return fromJson;
+  }
+  return 0;
+}
+
+function scheduleLaborCost(schedule: {
+  laborCost?: unknown;
+  workOrderProgress?: unknown;
+}): number {
+  const labor = numericValue(schedule.laborCost);
+  if (labor > 0) return labor;
+
+  if (schedule.workOrderProgress) {
+    const fromJson = sumFieldFromObject(schedule.workOrderProgress, [
+      'laborCost',
+      'labor_cost',
+    ]);
+    if (fromJson > 0) return fromJson;
+  }
+  return 0;
+}
+
+function scheduleTotalCost(schedule: {
+  totalCost?: unknown;
+  partsCost?: unknown;
+  laborCost?: unknown;
+  workOrderProgress?: unknown;
+}): number {
+  const total = numericValue(schedule.totalCost);
+  if (total > 0) return total;
+
+  const parts = schedulePartsCost(schedule);
+  const labor = scheduleLaborCost(schedule);
+  if (parts + labor > 0) return parts + labor;
+
+  if (schedule.workOrderProgress) {
+    const fromJson = sumFieldFromObject(schedule.workOrderProgress, [
+      'totalCost',
+      'total_cost',
+      'cost',
+    ]);
+    if (fromJson > 0) return fromJson;
+  }
+
+  return 0;
 }
 
 function analyticsStatus(
@@ -128,6 +214,9 @@ async function main(): Promise<void> {
           startReferenceDate: true,
           createdAt: true,
           updatedAt: true,
+          partsCost: true,
+          laborCost: true,
+          totalCost: true,
           workOrderProgress: true,
         },
       }),
@@ -189,6 +278,10 @@ async function main(): Promise<void> {
         scheduleStatus: schedule.status,
         odometerReading: schedule.odometerReading,
         nextDueDate: schedule.startReferenceDate,
+        partsCost: round(schedulePartsCost(schedule)),
+        laborCost: round(scheduleLaborCost(schedule)),
+        totalCost: round(scheduleTotalCost(schedule)),
+        createdAt: schedule.createdAt,
       }),
     );
 
@@ -209,7 +302,7 @@ async function main(): Promise<void> {
     const scheduleCost = new Map(
       schedules.map((schedule) => [
         schedule.id,
-        round(maintenanceCost(schedule.workOrderProgress)),
+        round(scheduleTotalCost(schedule)),
       ]),
     );
     const isDueWithin7Days = (schedule: (typeof schedules)[number]) => {

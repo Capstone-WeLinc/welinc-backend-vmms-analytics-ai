@@ -206,4 +206,136 @@ export declare class AnalyticsController {
             [x: string]: unknown;
         }[];
     }>;
+    getWorkOrders(): Promise<{
+        dataSource: {
+            type: string;
+            authoritativeFor: string;
+            generatedAt: string;
+            sourceMaxUpdatedAt: {} | null;
+            ageSeconds: number | null;
+            isStale: boolean;
+            maxAgeMinutes: number;
+        };
+        summary: {
+            totalWorkOrders: unknown;
+            openWorkOrders: any;
+            inProgressWorkOrders: any;
+            overdueWorkOrders: any;
+            completedWorkOrders: any;
+            cancelledWorkOrders: any;
+            totalPartsCost: number;
+            totalLaborCost: number;
+            totalCost: number;
+            avgCostPerWorkOrder: number;
+            workOrdersWithCost: number;
+        };
+        statusBreakdown: {
+            [x: string]: unknown;
+        }[];
+        mechanicWorkload: any[];
+        timeline: {
+            [x: string]: unknown;
+        }[];
+        topMaintenanceTypes: {
+            [x: string]: unknown;
+        }[];
+    }>;
+    getWorkOrdersLegacy(): Promise<{
+        dataSource: {
+            type: string;
+            authoritativeFor: string;
+            generatedAt: string;
+            sourceMaxUpdatedAt: {} | null;
+            ageSeconds: number | null;
+            isStale: boolean;
+            maxAgeMinutes: number;
+        };
+        summary: {
+            totalWorkOrders: unknown;
+            openWorkOrders: any;
+            inProgressWorkOrders: any;
+            overdueWorkOrders: any;
+            completedWorkOrders: any;
+            cancelledWorkOrders: any;
+            totalPartsCost: number;
+            totalLaborCost: number;
+            totalCost: number;
+            avgCostPerWorkOrder: number;
+            workOrdersWithCost: number;
+        };
+        statusBreakdown: {
+            [x: string]: unknown;
+        }[];
+        mechanicWorkload: any[];
+        timeline: {
+            [x: string]: unknown;
+        }[];
+        topMaintenanceTypes: {
+            [x: string]: unknown;
+        }[];
+    }>;
+    getMechanicWorkload(): Promise<any[]>;
+    getMechanicWorkloadLegacy(): Promise<any[]>;
+    getWorkOrderAiInsights(): Promise<{
+        aiSummary: string;
+    }>;
+    getWorkOrderAiInsightsLegacy(): Promise<{
+        aiSummary: string;
+    }>;
+    getWorkOrderList(mechanic?: string, status?: string, limit?: string): Promise<{
+        dataSource: {
+            type: string;
+            authoritativeFor: string;
+            generatedAt: string;
+            sourceMaxUpdatedAt: {} | null;
+            ageSeconds: number | null;
+            isStale: boolean;
+            maxAgeMinutes: number;
+        };
+        workOrders: any[];
+    }>;
+    getWorkOrderListLegacy(mechanic?: string, status?: string, limit?: string): Promise<{
+        dataSource: {
+            type: string;
+            authoritativeFor: string;
+            generatedAt: string;
+            sourceMaxUpdatedAt: {} | null;
+            ageSeconds: number | null;
+            isStale: boolean;
+            maxAgeMinutes: number;
+        };
+        workOrders: any[];
+    }>;
+    getWorkOrderItem(id: string): Promise<{
+        workOrder: any;
+    }>;
+    getWorkOrderItemLegacy(id: string): Promise<{
+        workOrder: any;
+    }>;
+    getWorkOrderRecommendations(id: string, title?: string, vehicle?: string): Promise<{
+        scheduleId: string;
+        title: string;
+        vehiclePlate: string;
+        workOrder: any;
+        checklist: {
+            stepNumber: number;
+            title: string;
+            description: string;
+            priority: string;
+        }[];
+        aiRecommendations: string;
+    }>;
+    getWorkOrderRecommendationsLegacy(id: string, title?: string, vehicle?: string): Promise<{
+        scheduleId: string;
+        title: string;
+        vehiclePlate: string;
+        workOrder: any;
+        checklist: {
+            stepNumber: number;
+            title: string;
+            description: string;
+            priority: string;
+        }[];
+        aiRecommendations: string;
+    }>;
 }

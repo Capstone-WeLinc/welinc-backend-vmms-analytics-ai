@@ -16,4 +16,30 @@ export declare class MaintenanceSchedulesController {
             [x: string]: unknown;
         }[];
     }>;
+    getSchedule(id: string): Promise<{
+        scheduleId: string;
+        title: string;
+        vehiclePlate: string;
+        workOrder: any;
+        checklist: {
+            stepNumber: number;
+            title: string;
+            description: string;
+            priority: string;
+        }[];
+        aiRecommendations: string;
+    }>;
+    getScheduleAi(id: string): Promise<{
+        scheduleId: string;
+        title: string;
+        vehiclePlate: string;
+        workOrder: any;
+        checklist: {
+            stepNumber: number;
+            title: string;
+            description: string;
+            priority: string;
+        }[];
+        aiRecommendations: string;
+    }>;
 }

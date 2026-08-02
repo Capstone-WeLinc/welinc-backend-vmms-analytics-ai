@@ -7,7 +7,7 @@ dotenv.config();
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.setGlobalPrefix('analytics', {
-    exclude: ['maintenance-schedules/search'],
+    exclude: ['maintenance-schedules/search', 'maintenance-schedules/(.*)'],
   });
   app.enableCors();
   await app.listen(process.env.PORT ?? 3001);

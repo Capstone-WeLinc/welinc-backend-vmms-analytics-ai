@@ -32,6 +32,10 @@ export interface MaintenanceScheduleSummaryRow {
   scheduleStatus: string;
   odometerReading: number | null;
   nextDueDate: Date | null;
+  partsCost: number;
+  laborCost: number;
+  totalCost: number;
+  createdAt: Date;
 }
 
 export interface AnalyticsSnapshotRow {
@@ -143,7 +147,11 @@ export async function initializeDataMart(
       assignedMechanic VARCHAR NOT NULL,
       scheduleStatus VARCHAR NOT NULL,
       odometerReading INTEGER,
-      nextDueDate TIMESTAMPTZ
+      nextDueDate TIMESTAMPTZ,
+      partsCost DOUBLE NOT NULL DEFAULT 0,
+      laborCost DOUBLE NOT NULL DEFAULT 0,
+      totalCost DOUBLE NOT NULL DEFAULT 0,
+      createdAt TIMESTAMPTZ
     );
 
     CREATE TABLE IF NOT EXISTS analytics_snapshot (
@@ -214,6 +222,15 @@ export async function initializeDataMart(
       dueDate TIMESTAMPTZ,
       generatedAt TIMESTAMPTZ NOT NULL
     );
+  `);
+
+  // ── Schema migrations: add new columns to existing tables ──────────────────
+  // ALTER TABLE ... ADD COLUMN IF NOT EXISTS is idempotent — safe on every startup.
+  await connection.run(`
+    ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS partsCost DOUBLE DEFAULT 0;
+    ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS laborCost DOUBLE DEFAULT 0;
+    ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS totalCost DOUBLE DEFAULT 0;
+    ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS createdAt TIMESTAMPTZ;
   `);
 }
 
@@ -302,6 +319,10 @@ export async function replaceMaintenanceScheduleSummary(
       'scheduleStatus',
       'odometerReading',
       'nextDueDate',
+      'partsCost',
+      'laborCost',
+      'totalCost',
+      'createdAt',
     ],
     rows,
     (row) => [
@@ -314,8 +335,12 @@ export async function replaceMaintenanceScheduleSummary(
       row.scheduleStatus,
       row.odometerReading,
       row.nextDueDate?.toISOString() ?? null,
+      row.partsCost,
+      row.laborCost,
+      row.totalCost,
+      row.createdAt.toISOString(),
     ],
-    new Set([8]),
+    new Set([8, 12]),
   );
 }
 

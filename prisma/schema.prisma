@@ -24,12 +24,12 @@ model Vehicle {
 
 model MaintenanceSchedule {
   id                         String            @id @default(uuid()) @db.Uuid
-  vehicleId                  String
-  title                      String            @db.VarChar(255)
-  garageId                   String?           @db.VarChar(255) @map("garage_id")
+  vehicleId                  String            @db.VarChar(50)
+  title                      String            @db.VarChar(100)
+  garageId                   String?           @map("garage_id") @db.VarChar(50)
   accountType                String?           @map("account_type")
-  status                     MaintenanceStatus
-  assignedMechanic           String?           @db.VarChar(255) @map("assigned_mechanic")
+  status                     MaintenanceStatus @default(PENDING)
+  assignedMechanic           String            @map("assigned_mechanic") @db.VarChar(100)
   checklistTemplateId        String?           @db.Uuid @map("checklist_template_id")
   odometerReading            Int?              @map("odometer_reading")
   triggerType                String?           @map("trigger_type")
@@ -40,11 +40,14 @@ model MaintenanceSchedule {
   startReferenceDate         DateTime?         @map("start_reference_date")
   previousScheduleId         String?           @db.Uuid @map("previous_schedule_id")
   workOrderProgress          Json?             @map("work_order_progress")
+  partsCost                  Decimal?          @map("parts_cost") @db.Decimal(10, 2)
+  laborCost                  Decimal?          @map("labor_cost") @db.Decimal(10, 2)
+  totalCost                  Decimal?          @map("total_cost") @db.Decimal(10, 2)
   createdAt                  DateTime          @default(now()) @map("created_at")
   updatedAt                  DateTime          @updatedAt @map("updated_at")
   deletedAt                  DateTime?         @map("deleted_at")
 
-  vehicle            Vehicle?          @relation("VehicleSchedules", fields: [vehicleId], references: [id])
+  vehicle            Vehicle?           @relation("VehicleSchedules", fields: [vehicleId], references: [id])
   checklistTemplate  ChecklistTemplate? @relation("ChecklistTemplateSchedules", fields: [checklistTemplateId], references: [id])
 
   @@map("maintenance_schedules")

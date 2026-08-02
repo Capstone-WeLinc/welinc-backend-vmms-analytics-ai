@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, NotFoundException, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { DuckDBConnection } from '@duckdb/node-api';
 import { DuckDbDataMartService } from './duckdb-datamart.service';
 
@@ -344,6 +344,468 @@ export class AnalyticsService implements OnModuleDestroy {
       );
       return { topTypes };
     });
+  }
+
+  // ─── Work Order / Mechanic Analytics ───────────────────────────────────────
+
+  private workOrderAiCache: { text: string; timestamp: number } | null = null;
+  private workOrderAiBuildPromise: Promise<string> | null = null;
+
+  async getWorkOrderSummary() {
+    return this.withDataMart(async (connection) => {
+      const snapshot = await this.getSnapshot(connection);
+
+      const [statusBreakdown, mechanicWorkload, timeline, topTypes, costBreakdown] = await Promise.all([
+        // Status distribution
+        this.query(
+          connection,
+          `SELECT scheduleStatus AS status,
+                  CAST(COUNT(*) AS INTEGER) AS workOrderCount,
+                  CAST(ROUND(COUNT(*) * 100.0 / NULLIF(SUM(COUNT(*)) OVER (), 0), 1) AS DOUBLE) AS percentage,
+                  CAST(ROUND(SUM(totalCost), 2) AS DOUBLE) AS totalCost
+           FROM maintenance_schedule_summary
+           GROUP BY scheduleStatus
+           ORDER BY CASE scheduleStatus
+             WHEN 'PENDING' THEN 1 WHEN 'DUE' THEN 2 WHEN 'IN_PROGRESS' THEN 3
+             WHEN 'COMPLETED' THEN 4 WHEN 'OVERDUE' THEN 5 WHEN 'CANCELLED' THEN 6
+             ELSE 7 END`,
+        ),
+        // Mechanic workload with cost
+        this.getMechanicWorkload(),
+        // Monthly timeline
+        this.getWorkOrderTimeline(),
+        // Top maintenance types by frequency
+        this.query(
+          connection,
+          `SELECT maintenanceTitle AS type,
+                  CAST(COUNT(*) AS INTEGER) AS count,
+                  CAST(ROUND(SUM(totalCost), 2) AS DOUBLE) AS totalCost,
+                  CAST(ROUND(AVG(totalCost), 2) AS DOUBLE) AS avgCost
+           FROM maintenance_schedule_summary
+           GROUP BY maintenanceTitle
+           ORDER BY count DESC
+           LIMIT 8`,
+        ),
+        // Overall cost breakdown
+        this.query(
+          connection,
+          `SELECT
+             CAST(ROUND(SUM(partsCost), 2) AS DOUBLE) AS totalPartsCost,
+             CAST(ROUND(SUM(laborCost), 2) AS DOUBLE) AS totalLaborCost,
+             CAST(ROUND(SUM(totalCost), 2) AS DOUBLE) AS totalCost,
+             CAST(ROUND(AVG(CASE WHEN totalCost > 0 THEN totalCost END), 2) AS DOUBLE) AS avgCostPerWorkOrder,
+             CAST(COUNT(CASE WHEN totalCost > 0 THEN 1 END) AS INTEGER) AS workOrdersWithCost
+           FROM maintenance_schedule_summary`,
+        ),
+      ]);
+
+      const totals = (statusBreakdown as any[]).reduce(
+        (acc: Record<string, number>, row: any) => {
+          acc[String(row.status)] = this.toNumber(row.workOrderCount);
+          return acc;
+        },
+        {},
+      );
+
+      const costs = (costBreakdown as any[])[0] ?? {};
+
+      return {
+        dataSource: this.dataSourceMetadata(snapshot),
+        summary: {
+          totalWorkOrders: Object.values(totals).reduce((s: number, v) => s + (v as number), 0),
+          openWorkOrders: (totals['PENDING'] ?? 0) + (totals['DUE'] ?? 0),
+          inProgressWorkOrders: totals['IN_PROGRESS'] ?? 0,
+          overdueWorkOrders: totals['OVERDUE'] ?? 0,
+          completedWorkOrders: totals['COMPLETED'] ?? 0,
+          cancelledWorkOrders: totals['CANCELLED'] ?? 0,
+          totalPartsCost: this.toNumber(costs.totalPartsCost),
+          totalLaborCost: this.toNumber(costs.totalLaborCost),
+          totalCost: this.toNumber(costs.totalCost),
+          avgCostPerWorkOrder: this.toNumber(costs.avgCostPerWorkOrder),
+          workOrdersWithCost: this.toNumber(costs.workOrdersWithCost),
+        },
+        statusBreakdown,
+        mechanicWorkload,
+        timeline,
+        topMaintenanceTypes: topTypes,
+      };
+    });
+  }
+
+  async getMechanicWorkload() {
+    return this.withDataMart(async (connection) => {
+      const rows = await this.query(
+        connection,
+        `SELECT
+           COALESCE(NULLIF(TRIM(assignedMechanic), ''), 'Unassigned') AS mechanic,
+           CAST(COUNT(*) AS INTEGER) AS totalAssigned,
+           CAST(SUM(CASE WHEN scheduleStatus = 'COMPLETED' THEN 1 ELSE 0 END) AS INTEGER) AS completed,
+           CAST(SUM(CASE WHEN scheduleStatus = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS INTEGER) AS inProgress,
+           CAST(SUM(CASE WHEN scheduleStatus = 'OVERDUE' THEN 1 ELSE 0 END) AS INTEGER) AS overdue,
+           CAST(SUM(CASE WHEN scheduleStatus IN ('PENDING', 'DUE') THEN 1 ELSE 0 END) AS INTEGER) AS pending,
+           CAST(ROUND(
+             SUM(CASE WHEN scheduleStatus = 'COMPLETED' THEN 1 ELSE 0 END) * 100.0 /
+             NULLIF(COUNT(*), 0), 1
+           ) AS DOUBLE) AS completionRate,
+           CAST(ROUND(SUM(totalCost), 2) AS DOUBLE) AS totalCost,
+           CAST(ROUND(SUM(partsCost), 2) AS DOUBLE) AS totalPartsCost,
+           CAST(ROUND(SUM(laborCost), 2) AS DOUBLE) AS totalLaborCost,
+           CAST(ROUND(AVG(CASE WHEN totalCost > 0 THEN totalCost END), 2) AS DOUBLE) AS avgCostPerWorkOrder,
+           CAST(COUNT(CASE WHEN scheduleStatus = 'OVERDUE' AND nextDueDate IS NOT NULL
+                          AND nextDueDate < current_date - INTERVAL 30 DAY THEN 1 END) AS INTEGER) AS overdueOver30Days
+         FROM maintenance_schedule_summary
+         GROUP BY COALESCE(NULLIF(TRIM(assignedMechanic), ''), 'Unassigned')
+         ORDER BY overdue DESC, totalAssigned DESC`,
+      );
+
+      return (rows as any[]).map((row) => ({
+        ...row,
+        riskLevel: this.toNumber(row.overdue) > 0
+          ? 'HIGH'
+          : this.toNumber(row.inProgress) > 0 || this.toNumber(row.pending) > 0
+            ? 'MEDIUM'
+            : 'LOW',
+      }));
+    });
+  }
+
+  async getWorkOrderTimeline() {
+    return this.withDataMart(async (connection) => {
+      const rows = await this.query(
+        connection,
+        `SELECT
+           strftime(createdAt, '%Y-%m') AS monthKey,
+           CAST(COUNT(*) AS INTEGER) AS created,
+           CAST(SUM(CASE WHEN scheduleStatus = 'COMPLETED' THEN 1 ELSE 0 END) AS INTEGER) AS completed,
+           CAST(SUM(CASE WHEN scheduleStatus = 'OVERDUE' THEN 1 ELSE 0 END) AS INTEGER) AS overdue,
+           CAST(SUM(CASE WHEN scheduleStatus = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS INTEGER) AS active,
+           CAST(ROUND(SUM(totalCost), 2) AS DOUBLE) AS totalCost,
+           CAST(ROUND(SUM(CASE WHEN scheduleStatus = 'COMPLETED' THEN totalCost ELSE 0 END), 2) AS DOUBLE) AS completedCost
+         FROM maintenance_schedule_summary
+         WHERE createdAt IS NOT NULL
+         GROUP BY strftime(createdAt, '%Y-%m')
+         ORDER BY monthKey
+         LIMIT 12`,
+      );
+      return rows;
+    });
+  }
+
+  async getScheduleWorkOrders(mechanic?: string, status?: string, limit = '100') {
+    return this.withDataMart(async (connection) => {
+      const snapshot = await this.getSnapshot(connection);
+      const conditions: string[] = [];
+      if (mechanic?.trim()) {
+        const escaped = mechanic.trim().replace(/'/g, "''");
+        conditions.push(`LOWER(assignedMechanic) LIKE '%${escaped.toLowerCase()}%'`);
+      }
+      if (status?.trim()) {
+        const escaped = status.trim().replace(/'/g, "''");
+        conditions.push(`scheduleStatus = '${escaped.toUpperCase()}'`);
+      }
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      const max = Math.min(Math.max(Number(limit) || 100, 1), 500);
+
+      const rows = await this.query(
+        connection,
+        `SELECT
+           scheduleId,
+           vehiclePlate,
+           maintenanceTitle,
+           triggerType,
+           intervalType,
+           assignedMechanic AS mechanic,
+           scheduleStatus AS status,
+           odometerReading,
+           CAST(nextDueDate AS VARCHAR) AS nextDueDate,
+           CAST(createdAt AS VARCHAR) AS createdAt,
+           CAST(partsCost AS DOUBLE) AS partsCost,
+           CAST(laborCost AS DOUBLE) AS laborCost,
+           CAST(totalCost AS DOUBLE) AS totalCost
+         FROM maintenance_schedule_summary
+         ${where}
+         ORDER BY CASE scheduleStatus WHEN 'OVERDUE' THEN 1 WHEN 'IN_PROGRESS' THEN 2 WHEN 'DUE' THEN 3 WHEN 'PENDING' THEN 4 ELSE 5 END, nextDueDate NULLS LAST
+         LIMIT ${max}`,
+      );
+
+      const now = Date.now();
+      const workOrders = rows.map((r: any) => {
+        const createdTime = r.createdAt ? Date.parse(r.createdAt) : now;
+        const dueTime = r.nextDueDate ? Date.parse(r.nextDueDate) : null;
+        const daysOpen = Math.max(0, Math.floor((now - createdTime) / (1000 * 60 * 60 * 24)));
+        const daysOverdue = dueTime && now > dueTime && r.status !== 'COMPLETED'
+          ? Math.floor((now - dueTime) / (1000 * 60 * 60 * 24))
+          : 0;
+
+        const priority =
+          r.status === 'OVERDUE' || daysOverdue > 0
+            ? 'HIGH'
+            : (r.odometerReading ?? 0) > 100000 || r.triggerType === 'ODOMETER'
+              ? 'MEDIUM'
+              : 'NORMAL';
+
+        const statusLabel =
+          r.status === 'COMPLETED'
+            ? 'Completed'
+            : r.status === 'IN_PROGRESS'
+              ? 'In Progress'
+              : r.status === 'OVERDUE'
+                ? 'Overdue'
+                : r.status === 'DUE'
+                  ? 'Due Soon'
+                  : r.status === 'CANCELLED'
+                    ? 'Cancelled'
+                    : 'Pending';
+
+        return {
+          ...r,
+          daysOpen,
+          daysOverdue,
+          priority,
+          statusLabel,
+          partsCost: this.toNumber(r.partsCost),
+          laborCost: this.toNumber(r.laborCost),
+          totalCost: this.toNumber(r.totalCost),
+        };
+      });
+
+      return {
+        dataSource: this.dataSourceMetadata(snapshot),
+        workOrders,
+      };
+    });
+  }
+
+  async getWorkOrderById(id: string) {
+    return this.withDataMart(async (connection) => {
+      const escaped = id.trim().replace(/'/g, "''");
+      const rows = await this.query(
+        connection,
+        `SELECT
+           scheduleId,
+           vehiclePlate,
+           maintenanceTitle,
+           triggerType,
+           intervalType,
+           assignedMechanic AS mechanic,
+           scheduleStatus AS status,
+           odometerReading,
+           CAST(nextDueDate AS VARCHAR) AS nextDueDate,
+           CAST(createdAt AS VARCHAR) AS createdAt,
+           CAST(partsCost AS DOUBLE) AS partsCost,
+           CAST(laborCost AS DOUBLE) AS laborCost,
+           CAST(totalCost AS DOUBLE) AS totalCost
+         FROM maintenance_schedule_summary
+         WHERE scheduleId = '${escaped}'`,
+      );
+
+      if (!rows[0]) {
+        throw new NotFoundException(`Work order schedule with ID ${id} not found.`);
+      }
+
+      const r = rows[0] as any;
+      const now = Date.now();
+      const createdTime = r.createdAt ? Date.parse(r.createdAt) : now;
+      const dueTime = r.nextDueDate ? Date.parse(r.nextDueDate) : null;
+      const daysOpen = Math.max(0, Math.floor((now - createdTime) / (1000 * 60 * 60 * 24)));
+      const daysOverdue = dueTime && now > dueTime && r.status !== 'COMPLETED'
+        ? Math.floor((now - dueTime) / (1000 * 60 * 60 * 24))
+        : 0;
+
+      const priority =
+        r.status === 'OVERDUE' || daysOverdue > 0
+          ? 'HIGH'
+          : (r.odometerReading ?? 0) > 100000 || r.triggerType === 'ODOMETER'
+            ? 'MEDIUM'
+            : 'NORMAL';
+
+      const statusLabel =
+        r.status === 'COMPLETED'
+          ? 'Completed'
+          : r.status === 'IN_PROGRESS'
+            ? 'In Progress'
+            : r.status === 'OVERDUE'
+              ? 'Overdue'
+              : r.status === 'DUE'
+                ? 'Due Soon'
+                : r.status === 'CANCELLED'
+                  ? 'Cancelled'
+                  : 'Pending';
+
+      return {
+        workOrder: {
+          ...r,
+          daysOpen,
+          daysOverdue,
+          priority,
+          statusLabel,
+          partsCost: this.toNumber(r.partsCost),
+          laborCost: this.toNumber(r.laborCost),
+          totalCost: this.toNumber(r.totalCost),
+        },
+      };
+    });
+  }
+
+  async getWorkOrderRecommendations(id: string, customTitle?: string, customVehicle?: string) {
+    let title = customTitle || 'Maintenance Work Order';
+    let vehiclePlate = customVehicle || 'Vehicle';
+    let workOrderData: any = null;
+
+    try {
+      const res = await this.getWorkOrderById(id);
+      workOrderData = res.workOrder;
+      title = workOrderData.maintenanceTitle || title;
+      vehiclePlate = workOrderData.vehiclePlate || vehiclePlate;
+    } catch {
+      // Allow standalone recommendations if scheduleId is virtual or missing
+    }
+
+    const steps = this.getDefaultChecklistSteps(title);
+
+    const prompt = `You are a certified master fleet mechanic and technical service advisor. Generate step-by-step technical advice and tools/parts recommendations for the following work order:
+
+Vehicle: ${vehiclePlate}
+Maintenance Task: ${title}
+${workOrderData ? `Status: ${workOrderData.statusLabel} | Priority: ${workOrderData.priority} | Odometer: ${workOrderData.odometerReading ?? 'n/a'} km` : ''}
+
+Provide clear, concise guidance in 4 sections:
+1. Critical Safety & PPE Requirements
+2. Recommended Diagnostic Tools & Parts Needed
+3. Step-by-Step Technical Execution Advisory
+4. Post-Service Verification & Quality Check`;
+
+    let aiRecommendations = '';
+    try {
+      aiRecommendations = await this.generateGeminiText(prompt);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      aiRecommendations = `Technical Advisory for ${title} (${vehiclePlate}):\n- Perform standard pre-service safety isolation.\n- Refer to VMMS OEM manual for torque specs and fluid capacities.\n- Verify leak-free operation prior to sign-off.\n\n(AI advisory fallback: ${msg})`;
+    }
+
+    return {
+      scheduleId: id,
+      title,
+      vehiclePlate,
+      workOrder: workOrderData,
+      checklist: steps,
+      aiRecommendations,
+    };
+  }
+
+  async getScheduleWithAi(id: string) {
+    return this.getWorkOrderRecommendations(id);
+  }
+
+  async getWorkOrderAiInsights(): Promise<string> {
+    const isFresh =
+      this.workOrderAiCache &&
+      Date.now() - this.workOrderAiCache.timestamp < this.AI_CACHE_TTL_MS;
+
+    if (isFresh) return this.workOrderAiCache!.text;
+
+    if (this.workOrderAiCache) {
+      if (!this.workOrderAiBuildPromise) {
+        this.workOrderAiBuildPromise = this.buildAndCacheWorkOrderAiInsights().finally(() => {
+          this.workOrderAiBuildPromise = null;
+        });
+      }
+      return this.workOrderAiCache.text;
+    }
+
+    if (!this.workOrderAiBuildPromise) {
+      this.workOrderAiBuildPromise = this.buildAndCacheWorkOrderAiInsights().finally(() => {
+        this.workOrderAiBuildPromise = null;
+      });
+    }
+    return this.workOrderAiBuildPromise;
+  }
+
+  private async buildAndCacheWorkOrderAiInsights(): Promise<string> {
+    const summary = await this.getWorkOrderSummary();
+
+    const s = summary.summary;
+    const mechanics: any[] = (summary.mechanicWorkload as any[]) ?? [];
+    const topTypes: any[] = (summary.topMaintenanceTypes as any[]) ?? [];
+    const timeline: any[] = (summary.timeline as any[]) ?? [];
+
+    const fmt = (n: number) => n >= 1000 ? `₱${(n / 1000).toFixed(1)}k` : `₱${n}`;
+
+    const topOverdue = mechanics
+      .filter((m: any) => this.toNumber(m.overdue) > 0)
+      .slice(0, 4)
+      .map((m: any) => `${m.mechanic}: ${m.overdue} overdue (${m.overdueOver30Days} >30d), cost ${fmt(this.toNumber(m.totalCost))}, ${m.completionRate}% done`)
+      .join('; ');
+
+    const topByLoad = mechanics
+      .slice(0, 4)
+      .map((m: any) => `${m.mechanic}: ${m.totalAssigned} WOs (${m.inProgress} active, ${m.completed} done), cost ${fmt(this.toNumber(m.totalCost))}`)
+      .join('; ');
+
+    const topCostMechanics = [...mechanics]
+      .sort((a, b) => this.toNumber(b.totalCost) - this.toNumber(a.totalCost))
+      .slice(0, 3)
+      .map((m: any) => `${m.mechanic}: ${fmt(this.toNumber(m.totalCost))} (avg ${fmt(this.toNumber(m.avgCostPerWorkOrder))}/WO)`)
+      .join('; ');
+
+    const topTypesList = topTypes
+      .slice(0, 4)
+      .map((t: any) => `${t.type}: ${t.count} WOs, ${fmt(this.toNumber(t.totalCost))} total (avg ${fmt(this.toNumber(t.avgCost))})`)
+      .join('; ');
+
+    const latestMonth = timeline.at(-1);
+    const trendLine = latestMonth
+      ? `${latestMonth.monthKey}: ${latestMonth.created} WOs, ${latestMonth.completed} done, ${latestMonth.overdue} overdue, cost ${fmt(this.toNumber(latestMonth.totalCost))}`
+      : '';
+
+    const mechanicCount = mechanics.filter((m: any) => m.mechanic !== 'Unassigned').length;
+
+    const prompt = `You are a senior fleet maintenance analyst. Analyze mechanic work order data for actionable insights. Be specific and data-driven. No preamble.
+
+Work Order Data:
+- Total WOs: ${s.totalWorkOrders} (${s.openWorkOrders} open, ${s.inProgressWorkOrders} in-progress, ${s.overdueWorkOrders} OVERDUE, ${s.completedWorkOrders} completed)
+- Total cost: ${fmt(s.totalCost)} (parts ${fmt(s.totalPartsCost)}, labor ${fmt(s.totalLaborCost)}, avg ${fmt(s.avgCostPerWorkOrder)}/WO)
+- Mechanics: ${mechanicCount} assigned
+- By workload: ${topByLoad || 'No data'}
+- With overdue WOs: ${topOverdue || 'None — all on track'}
+- By cost: ${topCostMechanics || 'No cost data'}
+- Top WO types: ${topTypesList || 'No data'}
+${trendLine ? `- Latest month: ${trendLine}` : ''}
+
+Respond in this exact format:
+1. Status Summary
+[2 sentences: fleet WO health, overdue severity, and cost exposure]
+
+2. Mechanic Performance
+[3 bullet points with specific mechanic names, WO counts, cost figures, and % completion]
+
+3. Priority Actions
+[3 prioritized actions with mechanic names and measurable targets]
+
+4. Cost Watch
+[1 metric — which mechanic or WO type is driving highest cost and why it matters]`;
+
+    try {
+      const result = await this.generateGeminiText(prompt);
+      this.workOrderAiCache = { text: result, timestamp: Date.now() };
+      return result;
+    } catch (error) {
+      const errorDetails = error instanceof Error ? error.message || String(error) : JSON.stringify(error);
+      console.error('[AnalyticsDataMart] Gemini error in getWorkOrderAiInsights', errorDetails);
+      if (this.workOrderAiCache) return this.workOrderAiCache.text;
+      return 'Work order AI insights are currently unavailable. Please try again later.';
+    }
+  }
+
+  private getDefaultChecklistSteps(title: string) {
+    return [
+      { stepNumber: 1, title: 'Pre-Work Safety & Visual Inspection', description: 'Inspect workspace, secure vehicle, check for leaks/damage around area.', priority: 'HIGH' },
+      { stepNumber: 2, title: 'Component Disassembly & Inspection', description: `Access and inspect components relevant to ${title}.`, priority: 'HIGH' },
+      { stepNumber: 3, title: 'Part Replacement / Fluid Service', description: 'Replace worn parts or fluids according to VMMS service manual standards.', priority: 'HIGH' },
+      { stepNumber: 4, title: 'Torque & Fastener Verification', description: 'Verify all bolts, fittings, and clamps are torqued to OEM specifications.', priority: 'MEDIUM' },
+      { stepNumber: 5, title: 'Post-Service Test & Diagnostics', description: 'Run engine/system test, verify zero leakage or error codes.', priority: 'MEDIUM' },
+      { stepNumber: 6, title: 'Sign-off & Work Order Logging', description: 'Log completed tasks, parts used, and updated odometer reading.', priority: 'LOW' },
+    ];
   }
 
   async getReport() {

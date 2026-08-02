@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AnalyticsController = void 0;
 const common_1 = require("@nestjs/common");
@@ -69,6 +72,44 @@ let AnalyticsController = class AnalyticsController {
     }
     getReportLegacy() {
         return this.analyticsService.getReport();
+    }
+    getWorkOrders() {
+        return this.analyticsService.getWorkOrderSummary();
+    }
+    getWorkOrdersLegacy() {
+        return this.analyticsService.getWorkOrderSummary();
+    }
+    getMechanicWorkload() {
+        return this.analyticsService.getMechanicWorkload();
+    }
+    getMechanicWorkloadLegacy() {
+        return this.analyticsService.getMechanicWorkload();
+    }
+    async getWorkOrderAiInsights() {
+        const aiSummary = await this.analyticsService.getWorkOrderAiInsights();
+        return { aiSummary };
+    }
+    async getWorkOrderAiInsightsLegacy() {
+        const aiSummary = await this.analyticsService.getWorkOrderAiInsights();
+        return { aiSummary };
+    }
+    getWorkOrderList(mechanic, status, limit) {
+        return this.analyticsService.getScheduleWorkOrders(mechanic, status, limit);
+    }
+    getWorkOrderListLegacy(mechanic, status, limit) {
+        return this.analyticsService.getScheduleWorkOrders(mechanic, status, limit);
+    }
+    getWorkOrderItem(id) {
+        return this.analyticsService.getWorkOrderById(id);
+    }
+    getWorkOrderItemLegacy(id) {
+        return this.analyticsService.getWorkOrderById(id);
+    }
+    getWorkOrderRecommendations(id, title, vehicle) {
+        return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle);
+    }
+    getWorkOrderRecommendationsLegacy(id, title, vehicle) {
+        return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle);
     }
 };
 exports.AnalyticsController = AnalyticsController;
@@ -145,6 +186,92 @@ __decorate([
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)
 ], AnalyticsController.prototype, "getReportLegacy", null);
+__decorate([
+    (0, common_1.Get)('workorders'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrders", null);
+__decorate([
+    (0, common_1.Get)('analytics/workorders'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrdersLegacy", null);
+__decorate([
+    (0, common_1.Get)('workorders/mechanics'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getMechanicWorkload", null);
+__decorate([
+    (0, common_1.Get)('analytics/workorders/mechanics'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getMechanicWorkloadLegacy", null);
+__decorate([
+    (0, common_1.Get)('workorders/ai-insights'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], AnalyticsController.prototype, "getWorkOrderAiInsights", null);
+__decorate([
+    (0, common_1.Get)('analytics/workorders/ai-insights'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], AnalyticsController.prototype, "getWorkOrderAiInsightsLegacy", null);
+__decorate([
+    (0, common_1.Get)('workorders/list'),
+    __param(0, (0, common_1.Query)('mechanic')),
+    __param(1, (0, common_1.Query)('status')),
+    __param(2, (0, common_1.Query)('limit')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, String]),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrderList", null);
+__decorate([
+    (0, common_1.Get)('analytics/workorders/list'),
+    __param(0, (0, common_1.Query)('mechanic')),
+    __param(1, (0, common_1.Query)('status')),
+    __param(2, (0, common_1.Query)('limit')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, String]),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrderListLegacy", null);
+__decorate([
+    (0, common_1.Get)('workorders/item/:id'),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrderItem", null);
+__decorate([
+    (0, common_1.Get)('analytics/workorders/item/:id'),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrderItemLegacy", null);
+__decorate([
+    (0, common_1.Get)('workorders/recommendations/:id'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Query)('title')),
+    __param(2, (0, common_1.Query)('vehicle')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, String]),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrderRecommendations", null);
+__decorate([
+    (0, common_1.Get)('analytics/workorders/recommendations/:id'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Query)('title')),
+    __param(2, (0, common_1.Query)('vehicle')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, String]),
+    __metadata("design:returntype", void 0)
+], AnalyticsController.prototype, "getWorkOrderRecommendationsLegacy", null);
 exports.AnalyticsController = AnalyticsController = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [analytics_service_1.AnalyticsService,
