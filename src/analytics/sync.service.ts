@@ -156,19 +156,16 @@ function analyticsStatus(
   dueDate: Date | null,
   generatedAt: Date,
 ): MaintenanceStatus {
-  // Terminal / explicit statuses are authoritative — never override them.
+  // Terminal / explicit active workflow statuses set by mechanics are authoritative.
   if (
     status === MaintenanceStatus.COMPLETED ||
     status === MaintenanceStatus.CANCELLED ||
-    status === MaintenanceStatus.IN_PROGRESS ||
-    status === MaintenanceStatus.DUE ||
-    status === MaintenanceStatus.OVERDUE
+    status === MaintenanceStatus.IN_PROGRESS
   ) {
     return status;
   }
 
-
-  if (status === MaintenanceStatus.PENDING && dueDate) {
+  if (dueDate) {
     const startOfToday = new Date(
       Date.UTC(
         generatedAt.getUTCFullYear(),
@@ -176,20 +173,26 @@ function analyticsStatus(
         generatedAt.getUTCDate(),
       ),
     );
+    const startOfDue = new Date(
+      Date.UTC(
+        dueDate.getUTCFullYear(),
+        dueDate.getUTCMonth(),
+        dueDate.getUTCDate(),
+      ),
+    );
+
     const msPerDay = 24 * 60 * 60 * 1000;
-    const daysFromToday = (dueDate.getTime() - startOfToday.getTime()) / msPerDay;
+    const diffDays = Math.round(
+      (startOfDue.getTime() - startOfToday.getTime()) / msPerDay,
+    );
 
-    if (daysFromToday >= 0) {
-      // Today or future — stays PENDING
-      return MaintenanceStatus.PENDING;
+    if (diffDays < 0) {
+      return MaintenanceStatus.OVERDUE;
     }
-
-    // Past due: within 90 days → DUE, older than 90 days → OVERDUE
-    if (daysFromToday >= -90) {
+    if (diffDays <= 7) {
       return MaintenanceStatus.DUE;
     }
-
-    return MaintenanceStatus.OVERDUE;
+    return MaintenanceStatus.PENDING;
   }
 
   return status;

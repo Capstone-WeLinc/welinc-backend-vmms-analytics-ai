@@ -133,7 +133,9 @@ export declare class AnalyticsService implements OnModuleDestroy {
     getWorkOrderById(id: string): Promise<{
         workOrder: any;
     }>;
-    getWorkOrderRecommendations(id: string, customTitle?: string, customVehicle?: string): Promise<{
+    getWorkOrderRecommendations(id: string, customTitle?: string, customVehicle?: string, checklistItems?: Array<{
+        text: string;
+    }> | string[]): Promise<{
         scheduleId: string;
         title: string;
         vehiclePlate: string;

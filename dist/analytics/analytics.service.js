@@ -547,7 +547,7 @@ let AnalyticsService = class AnalyticsService {
             };
         });
     }
-    async getWorkOrderRecommendations(id, customTitle, customVehicle) {
+    async getWorkOrderRecommendations(id, customTitle, customVehicle, checklistItems) {
         let title = customTitle || 'Maintenance Work Order';
         let vehiclePlate = customVehicle || 'Vehicle';
         let workOrderData = null;
@@ -560,21 +560,35 @@ let AnalyticsService = class AnalyticsService {
         catch {
             // Allow standalone recommendations if scheduleId is virtual or missing
         }
-        const steps = this.getDefaultChecklistSteps(title);
-        const prompt = `You are a certified master fleet mechanic and technical service advisor. Generate step-by-step technical advice and tools/parts recommendations for the following work order:
+        const items = (checklistItems ?? [])
+            .map((item) => (typeof item === 'string' ? item : item?.text ?? String(item)))
+            .filter(Boolean);
+        const steps = items.length
+            ? items.map((itemText, idx) => ({
+                stepNumber: idx + 1,
+                title: itemText,
+                description: `Follow OEM service guidelines to inspect, service, or test ${itemText}. Verify proper torque, cleanliness, and operation.`,
+                priority: idx < 2 ? 'HIGH' : idx < 4 ? 'MEDIUM' : 'NORMAL',
+            }))
+            : this.getDefaultChecklistSteps(title);
+        const itemsList = items.length
+            ? items.map((it, i) => `${i + 1}. ${it}`).join('\n')
+            : 'Default inspection & service checklist';
+        const prompt = `Service Advisor Advisory:
+Task: ${title} (${vehiclePlate})
+${workOrderData ? `Status: ${workOrderData.statusLabel}` : ''}
 
-Vehicle: ${vehiclePlate}
-Maintenance Task: ${title}
-${workOrderData ? `Status: ${workOrderData.statusLabel} | Priority: ${workOrderData.priority} | Odometer: ${workOrderData.odometerReading ?? 'n/a'} km` : ''}
+Checklist Items:
+${itemsList}
 
-Provide clear, concise guidance in 4 sections:
-1. Critical Safety & PPE Requirements
-2. Recommended Diagnostic Tools & Parts Needed
-3. Step-by-Step Technical Execution Advisory
-4. Post-Service Verification & Quality Check`;
+Provide brief, bulleted guidance (1-2 sentences per section max):
+1. Safety & PPE Requirements
+2. Diagnostic Tools & Parts Needed
+3. Item Execution Instructions
+4. Quality Control Sign-off`;
         let aiRecommendations = '';
         try {
-            aiRecommendations = await this.generateGeminiText(prompt);
+            aiRecommendations = await this.generateGeminiText(prompt, 350);
         }
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -886,10 +900,13 @@ Format:
         const model = (process.env['GEMINI_MODEL']?.trim() || 'gemini-flash-latest').replace(/^models\//, '');
         return { apiKey, apiBaseUrl, model };
     }
-    async generateGeminiText(prompt) {
+    async generateGeminiText(prompt, maxTokens = 350) {
         const { apiKey, apiBaseUrl, model } = this.getGeminiConfig();
-        // Only use models confirmed to have free-tier quota available
+        // Prioritize high-quota Flash Lite models (15 RPM / 500 RPD) over rate-limited models
         const modelCandidates = [
+            'gemini-3.5-flash-lite',
+            'gemini-3.1-flash-lite',
+            'gemini-2.5-flash-lite',
             model,
             'gemini-flash-latest',
             'gemini-flash-lite-latest',
@@ -897,7 +914,7 @@ Format:
         let lastError = null;
         for (const candidateModel of modelCandidates) {
             try {
-                return await this.generateGeminiTextForModel(prompt, apiKey, apiBaseUrl, candidateModel);
+                return await this.generateGeminiTextForModel(prompt, apiKey, apiBaseUrl, candidateModel, maxTokens);
             }
             catch (error) {
                 const details = error instanceof Error ? error.message : String(error);
@@ -920,7 +937,7 @@ Format:
         }
         throw new common_1.ServiceUnavailableException('Gemini API failed: no available model succeeded. Please verify your API key and account quota.');
     }
-    async generateGeminiTextForModel(prompt, apiKey, apiBaseUrl, model) {
+    async generateGeminiTextForModel(prompt, apiKey, apiBaseUrl, model, maxTokens = 350) {
         const contentRequestBody = JSON.stringify({
             model: `models/${model}`,
             contents: [
@@ -937,7 +954,7 @@ Format:
                 temperature: 0.2,
                 topP: 0.95,
                 topK: 40,
-                maxOutputTokens: 2500,
+                maxOutputTokens: maxTokens,
             },
         });
         const textRequestBody = JSON.stringify({
@@ -946,7 +963,7 @@ Format:
                 text: prompt,
             },
             temperature: 0.2,
-            maxOutputTokens: 2500,
+            maxOutputTokens: maxTokens,
         });
         const requestOptions = {
             method: 'POST',

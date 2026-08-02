@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { SyncService } from './sync.service';
 
@@ -145,20 +145,20 @@ export class AnalyticsController {
   }
 
   @Get('workorders/recommendations/:id')
+  @Post('workorders/recommendations/:id')
   getWorkOrderRecommendations(
     @Param('id') id: string,
-    @Query('title') title?: string,
-    @Query('vehicle') vehicle?: string,
+    @Query('title') queryTitle?: string,
+    @Query('vehicle') queryVehicle?: string,
+    @Query('items') itemsQuery?: string,
+    @Body() body?: { title?: string; vehicle?: string; checklistItems?: Array<{ text: string }> },
   ) {
-    return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle);
-  }
-
-  @Get('analytics/workorders/recommendations/:id')
-  getWorkOrderRecommendationsLegacy(
-    @Param('id') id: string,
-    @Query('title') title?: string,
-    @Query('vehicle') vehicle?: string,
-  ) {
-    return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle);
+    const title = body?.title || queryTitle;
+    const vehicle = body?.vehicle || queryVehicle;
+    const checklistItems =
+      body?.checklistItems ||
+      (itemsQuery ? itemsQuery.split('|').filter(Boolean).map((text) => ({ text })) : undefined);
+    return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle, checklistItems);
   }
 }
+

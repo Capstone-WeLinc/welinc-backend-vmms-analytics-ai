@@ -312,20 +312,13 @@ export declare class AnalyticsController {
     getWorkOrderItemLegacy(id: string): Promise<{
         workOrder: any;
     }>;
-    getWorkOrderRecommendations(id: string, title?: string, vehicle?: string): Promise<{
-        scheduleId: string;
-        title: string;
-        vehiclePlate: string;
-        workOrder: any;
-        checklist: {
-            stepNumber: number;
-            title: string;
-            description: string;
-            priority: string;
-        }[];
-        aiRecommendations: string;
-    }>;
-    getWorkOrderRecommendationsLegacy(id: string, title?: string, vehicle?: string): Promise<{
+    getWorkOrderRecommendations(id: string, queryTitle?: string, queryVehicle?: string, itemsQuery?: string, body?: {
+        title?: string;
+        vehicle?: string;
+        checklistItems?: Array<{
+            text: string;
+        }>;
+    }): Promise<{
         scheduleId: string;
         title: string;
         vehiclePlate: string;

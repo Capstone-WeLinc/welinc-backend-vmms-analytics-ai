@@ -105,11 +105,12 @@ let AnalyticsController = class AnalyticsController {
     getWorkOrderItemLegacy(id) {
         return this.analyticsService.getWorkOrderById(id);
     }
-    getWorkOrderRecommendations(id, title, vehicle) {
-        return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle);
-    }
-    getWorkOrderRecommendationsLegacy(id, title, vehicle) {
-        return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle);
+    getWorkOrderRecommendations(id, queryTitle, queryVehicle, itemsQuery, body) {
+        const title = body?.title || queryTitle;
+        const vehicle = body?.vehicle || queryVehicle;
+        const checklistItems = body?.checklistItems ||
+            (itemsQuery ? itemsQuery.split('|').filter(Boolean).map((text) => ({ text })) : undefined);
+        return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle, checklistItems);
     }
 };
 exports.AnalyticsController = AnalyticsController;
@@ -256,22 +257,16 @@ __decorate([
 ], AnalyticsController.prototype, "getWorkOrderItemLegacy", null);
 __decorate([
     (0, common_1.Get)('workorders/recommendations/:id'),
+    (0, common_1.Post)('workorders/recommendations/:id'),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Query)('title')),
     __param(2, (0, common_1.Query)('vehicle')),
+    __param(3, (0, common_1.Query)('items')),
+    __param(4, (0, common_1.Body)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, String]),
+    __metadata("design:paramtypes", [String, String, String, String, Object]),
     __metadata("design:returntype", void 0)
 ], AnalyticsController.prototype, "getWorkOrderRecommendations", null);
-__decorate([
-    (0, common_1.Get)('analytics/workorders/recommendations/:id'),
-    __param(0, (0, common_1.Param)('id')),
-    __param(1, (0, common_1.Query)('title')),
-    __param(2, (0, common_1.Query)('vehicle')),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, String]),
-    __metadata("design:returntype", void 0)
-], AnalyticsController.prototype, "getWorkOrderRecommendationsLegacy", null);
 exports.AnalyticsController = AnalyticsController = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [analytics_service_1.AnalyticsService,
