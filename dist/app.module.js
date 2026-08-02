@@ -13,13 +13,23 @@ const analytics_service_1 = require("./analytics/analytics.service");
 const sync_service_1 = require("./analytics/sync.service");
 const duckdb_datamart_service_1 = require("./analytics/duckdb-datamart.service");
 const maintenance_schedules_controller_1 = require("./analytics/maintenance-schedules.controller");
+const gemini_ai_service_1 = require("./analytics/gemini-ai.service");
+const vehicle_kpi_service_1 = require("./analytics/vehicle-kpi.service");
+const work_order_analytics_service_1 = require("./analytics/work-order-analytics.service");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
 exports.AppModule = AppModule = __decorate([
     (0, common_1.Module)({
         controllers: [analytics_controller_1.AnalyticsController, maintenance_schedules_controller_1.MaintenanceSchedulesController],
-        providers: [duckdb_datamart_service_1.DuckDbDataMartService, analytics_service_1.AnalyticsService, sync_service_1.SyncService],
+        providers: [
+            duckdb_datamart_service_1.DuckDbDataMartService,
+            gemini_ai_service_1.GeminiAiService,
+            vehicle_kpi_service_1.VehicleKpiService,
+            work_order_analytics_service_1.WorkOrderAnalyticsService,
+            analytics_service_1.AnalyticsService,
+            sync_service_1.SyncService,
+        ],
     })
 ], AppModule);
 //# sourceMappingURL=app.module.js.map

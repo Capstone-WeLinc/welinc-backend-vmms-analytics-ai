@@ -103,27 +103,11 @@ export declare class AnalyticsController {
         }[];
     }>;
     getVehicleKpis(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         vehicles: any[];
     }>;
     getVehicleKpisLegacy(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         vehicles: any[];
     }>;
     getAiInsights(): Promise<{
@@ -133,27 +117,11 @@ export declare class AnalyticsController {
         aiSummary: string;
     }>;
     getAlerts(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         alerts: any[];
     }>;
     getAlertsLegacy(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         alerts: any[];
     }>;
     getReport(): Promise<{
@@ -207,15 +175,7 @@ export declare class AnalyticsController {
         }[];
     }>;
     getWorkOrders(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         summary: {
             totalWorkOrders: unknown;
             openWorkOrders: any;
@@ -241,15 +201,7 @@ export declare class AnalyticsController {
         }[];
     }>;
     getWorkOrdersLegacy(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         summary: {
             totalWorkOrders: unknown;
             openWorkOrders: any;
@@ -283,27 +235,11 @@ export declare class AnalyticsController {
         aiSummary: string;
     }>;
     getWorkOrderList(mechanic?: string, status?: string, limit?: string): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         workOrders: any[];
     }>;
     getWorkOrderListLegacy(mechanic?: string, status?: string, limit?: string): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         workOrders: any[];
     }>;
     getWorkOrderItem(id: string): Promise<{

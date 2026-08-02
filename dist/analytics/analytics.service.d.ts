@@ -1,14 +1,15 @@
 import { OnModuleDestroy } from '@nestjs/common';
 import { DuckDbDataMartService } from './duckdb-datamart.service';
+import { GeminiAiService } from './gemini-ai.service';
+import { VehicleKpiService } from './vehicle-kpi.service';
+import { WorkOrderAnalyticsService } from './work-order-analytics.service';
 type DataMartRow = Record<string, unknown>;
 export declare class AnalyticsService implements OnModuleDestroy {
     private readonly dataMartService;
-    /** AI insights cache to minimize Gemini API calls (free-tier quota is very limited) */
-    private aiInsightsCache;
-    private readonly AI_CACHE_TTL_MS;
-    /** Shared in-flight promise — concurrent callers await the same Gemini call */
-    private aiInsightsBuildPromise;
-    constructor(dataMartService: DuckDbDataMartService);
+    private readonly geminiAiService;
+    private readonly vehicleKpiService;
+    private readonly workOrderAnalyticsService;
+    constructor(dataMartService: DuckDbDataMartService, geminiAiService: GeminiAiService, vehicleKpiService: VehicleKpiService, workOrderAnalyticsService: WorkOrderAnalyticsService);
     getHealth(): {
         status: string;
         service: string;
@@ -38,32 +39,12 @@ export declare class AnalyticsService implements OnModuleDestroy {
         monthlyTrend: DataMartRow[];
     }>;
     private buildOverviewSummaryMetrics;
-    private calculateRiskScore;
-    private getRiskLevel;
     getVehicleKpis(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         vehicles: any[];
     }>;
-    private buildVehicleRiskReason;
-    private toNumber;
     getAlerts(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         alerts: any[];
     }>;
     searchMaintenanceSchedules(query: string | undefined, limit?: string): Promise<{
@@ -86,18 +67,8 @@ export declare class AnalyticsService implements OnModuleDestroy {
     getExpandedTrends(): Promise<{
         topTypes: DataMartRow[];
     }>;
-    private workOrderAiCache;
-    private workOrderAiBuildPromise;
     getWorkOrderSummary(): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         summary: {
             totalWorkOrders: unknown;
             openWorkOrders: any;
@@ -111,23 +82,23 @@ export declare class AnalyticsService implements OnModuleDestroy {
             avgCostPerWorkOrder: number;
             workOrdersWithCost: number;
         };
-        statusBreakdown: DataMartRow[];
+        statusBreakdown: {
+            [x: string]: unknown;
+        }[];
         mechanicWorkload: any[];
-        timeline: DataMartRow[];
-        topMaintenanceTypes: DataMartRow[];
+        timeline: {
+            [x: string]: unknown;
+        }[];
+        topMaintenanceTypes: {
+            [x: string]: unknown;
+        }[];
     }>;
     getMechanicWorkload(): Promise<any[]>;
-    getWorkOrderTimeline(): Promise<DataMartRow[]>;
+    getWorkOrderTimeline(): Promise<{
+        [x: string]: unknown;
+    }[]>;
     getScheduleWorkOrders(mechanic?: string, status?: string, limit?: string): Promise<{
-        dataSource: {
-            type: string;
-            authoritativeFor: string;
-            generatedAt: string;
-            sourceMaxUpdatedAt: {} | null;
-            ageSeconds: number | null;
-            isStale: boolean;
-            maxAgeMinutes: number;
-        };
+        dataSource: any;
         workOrders: any[];
     }>;
     getWorkOrderById(id: string): Promise<{
@@ -162,8 +133,7 @@ export declare class AnalyticsService implements OnModuleDestroy {
         aiRecommendations: string;
     }>;
     getWorkOrderAiInsights(): Promise<string>;
-    private buildAndCacheWorkOrderAiInsights;
-    private getDefaultChecklistSteps;
+    getAiInsights(): Promise<string>;
     getReport(): Promise<{
         dataSource: {
             type: string;
@@ -181,22 +151,13 @@ export declare class AnalyticsService implements OnModuleDestroy {
         alerts: any[];
         schedules: DataMartRow[];
     }>;
-    getAiInsights(): Promise<string>;
-    private buildAndCacheAiInsights;
-    private getGeminiConfig;
-    private generateGeminiText;
-    private generateGeminiTextForModel;
-    private extractGeminiTextOutput;
+    private toNumber;
     private getSnapshot;
     private dataSourceMetadata;
     private positiveNumber;
     private query;
     private withDataMart;
     onModuleDestroy(): Promise<void>;
-    /**
-     * Reset cached DuckDB connection in shared DuckDbDataMartService.
-     */
     resetConnection(): void;
-    private ensurePreparedData;
 }
 export {};
