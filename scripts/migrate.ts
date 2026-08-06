@@ -564,21 +564,13 @@ async function main(): Promise<void> {
       return;
     }
 
-    console.log('Enabling pgvector...');
-    let pgvectorEnabled = false;
-    try {
-      await enablePgvector(prisma);
-      pgvectorEnabled = true;
-      console.log('Done.');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/extension \"vector\" is not available|vector extension|pgvector/i.test(message)) {
-        console.warn(
-          'pgvector is not available in the connected PostgreSQL database; skipping embeddings.',
-        );
-      } else {
-        throw error;
-      }
+    console.log('Enabling pgvector / embeddings table...');
+    const { hasVectorExtension } = await enablePgvector(prisma);
+    const pgvectorEnabled = true;
+    if (hasVectorExtension) {
+      console.log('Done (native pgvector enabled).');
+    } else {
+      console.log('Done (pgvector C extension unavailable; using JSONB fallback mode).');
     }
 
     if (pgvectorEnabled) {

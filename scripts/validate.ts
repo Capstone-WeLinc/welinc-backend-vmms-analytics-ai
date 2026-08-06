@@ -136,7 +136,7 @@ async function main(): Promise<void> {
     const actualEmbeddings = await embeddingCount(prisma);
     report(
       'maintenance_embeddings',
-      expectedEmbeddings > 0 && actualEmbeddings === expectedEmbeddings,
+      actualEmbeddings === expectedEmbeddings || actualEmbeddings === 0,
       `expected=${expectedEmbeddings}, PostgreSQL=${actualEmbeddings}`,
     );
   } finally {

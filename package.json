@@ -9,6 +9,8 @@
   },
   "scripts": {
     "build": "nest build --webpack false",
+    "validate": "node -r ts-node/register/transpile-only ./scripts/validate.ts",
+    "studio": "node -r ts-node/register/transpile-only ./scripts/duckdb-studio.ts",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "migrate": "node -r ts-node/register/transpile-only ./scripts/migrate.ts",
