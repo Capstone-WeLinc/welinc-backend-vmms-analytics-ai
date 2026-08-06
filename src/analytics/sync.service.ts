@@ -153,48 +153,9 @@ function scheduleTotalCost(schedule: {
 
 function analyticsStatus(
   status: MaintenanceStatus,
-  dueDate: Date | null,
-  generatedAt: Date,
+  _dueDate: Date | null,
+  _generatedAt: Date,
 ): MaintenanceStatus {
-  // Terminal / explicit active workflow statuses set by mechanics are authoritative.
-  if (
-    status === MaintenanceStatus.COMPLETED ||
-    status === MaintenanceStatus.CANCELLED ||
-    status === MaintenanceStatus.IN_PROGRESS
-  ) {
-    return status;
-  }
-
-  if (dueDate) {
-    const startOfToday = new Date(
-      Date.UTC(
-        generatedAt.getUTCFullYear(),
-        generatedAt.getUTCMonth(),
-        generatedAt.getUTCDate(),
-      ),
-    );
-    const startOfDue = new Date(
-      Date.UTC(
-        dueDate.getUTCFullYear(),
-        dueDate.getUTCMonth(),
-        dueDate.getUTCDate(),
-      ),
-    );
-
-    const msPerDay = 24 * 60 * 60 * 1000;
-    const diffDays = Math.round(
-      (startOfDue.getTime() - startOfToday.getTime()) / msPerDay,
-    );
-
-    if (diffDays < 0) {
-      return MaintenanceStatus.OVERDUE;
-    }
-    if (diffDays <= 7) {
-      return MaintenanceStatus.DUE;
-    }
-    return MaintenanceStatus.PENDING;
-  }
-
   return status;
 }
 
