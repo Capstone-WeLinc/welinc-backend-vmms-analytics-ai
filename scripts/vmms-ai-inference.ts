@@ -122,11 +122,19 @@ async function main(): Promise<void> {
   let sourceCounts: [number, number, number] = [0, 0, 0];
   if (process.env['DATABASE_URL']) {
     try {
-      sourceCounts = (await prisma.$transaction([
+      const [vehicleCount, scheduleList] = await Promise.all([
         prisma.vehicle.count({ where: { deletedAt: null } }),
-        prisma.maintenanceSchedule.count({ where: { deletedAt: null } }),
-        prisma.mechanic.count({ where: { isActive: true } }),
-      ])) as [number, number, number];
+        prisma.maintenanceSchedule.findMany({
+          where: { deletedAt: null },
+          select: { assignedMechanic: true },
+        }),
+      ]);
+      const uniqueMechanics = new Set(
+        scheduleList
+          .map((s) => s.assignedMechanic?.trim())
+          .filter((m): m is string => Boolean(m)),
+      ).size;
+      sourceCounts = [vehicleCount, scheduleList.length, uniqueMechanics];
     } catch {
       // Ignore DB errors and continue with DuckDB inference
     }
