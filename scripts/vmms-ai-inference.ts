@@ -119,14 +119,19 @@ async function loadVehicleKpis(): Promise<VehicleKpiRow[]> {
 }
 
 async function main(): Promise<void> {
-  const [rows, sourceCounts] = await Promise.all([
-    loadVehicleKpis(),
-    prisma.$transaction([
-      prisma.vehicle.count({ where: { deletedAt: null } }),
-      prisma.maintenanceSchedule.count({ where: { deletedAt: null } }),
-      prisma.mechanic.count({ where: { isActive: true } }),
-    ]),
-  ]);
+  let sourceCounts: [number, number, number] = [0, 0, 0];
+  if (process.env['DATABASE_URL']) {
+    try {
+      sourceCounts = (await prisma.$transaction([
+        prisma.vehicle.count({ where: { deletedAt: null } }),
+        prisma.maintenanceSchedule.count({ where: { deletedAt: null } }),
+        prisma.mechanic.count({ where: { isActive: true } }),
+      ])) as [number, number, number];
+    } catch {
+      // Ignore DB errors and continue with DuckDB inference
+    }
+  }
+  const rows = await loadVehicleKpis();
 
   const predictions = rows
     .map((row): Prediction => {

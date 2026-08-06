@@ -12,7 +12,9 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "migrate": "node -r ts-node/register/transpile-only ./scripts/migrate.ts",
-    "migrate:seed": "node -r ts-node/register/transpile-only ./scripts/migrate-analytics.ts"
+    "migrate:seed": "node -r ts-node/register/transpile-only ./scripts/migrate-analytics.ts",
+    "ai:inference": "node -r ts-node/register/transpile-only ./scripts/vmms-ai-inference.ts",
+    "inference": "node -r ts-node/register/transpile-only ./scripts/vmms-ai-inference.ts"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.4-r.1",
