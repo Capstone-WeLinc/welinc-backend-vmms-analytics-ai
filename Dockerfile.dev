@@ -10,5 +10,8 @@ RUN npm config set fetch-retries 5 && \
 # Copy source
 COPY . .
 
+# Generate Prisma client
+RUN npx prisma generate
+
 EXPOSE 3001
 CMD ["npm", "run", "start:dev"]

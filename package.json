@@ -9,8 +9,6 @@
   },
   "scripts": {
     "build": "nest build --webpack false",
-    "generate": "prisma generate --schema prisma/schema.prisma",
-    "postinstall": "npm run generate",
     "validate": "node -r ts-node/register/transpile-only ./scripts/validate.ts",
     "studio": "node -r ts-node/register/transpile-only ./scripts/duckdb-studio.ts",
     "start": "nest start",
