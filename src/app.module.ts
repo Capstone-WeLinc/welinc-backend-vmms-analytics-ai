@@ -7,8 +7,10 @@ import { MaintenanceSchedulesController } from './analytics/maintenance-schedule
 import { GeminiAiService } from './analytics/gemini-ai.service';
 import { VehicleKpiService } from './analytics/vehicle-kpi.service';
 import { WorkOrderAnalyticsService } from './analytics/work-order-analytics.service';
+import { AnalyticsAccessModule } from './auth/analytics-access.module';
 
 @Module({
+  imports: [AnalyticsAccessModule],
   controllers: [AnalyticsController, MaintenanceSchedulesController],
   providers: [
     DuckDbDataMartService,

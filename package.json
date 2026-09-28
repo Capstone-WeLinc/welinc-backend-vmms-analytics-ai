@@ -8,6 +8,7 @@
     "node": ">=20.19 <21"
   },
   "scripts": {
+    "test:auth": "node --test -r ts-node/register/transpile-only test/analytics-access.test.ts",
     "build": "nest build --webpack false",
     "validate": "node -r ts-node/register/transpile-only ./scripts/validate.ts",
     "studio": "node -r ts-node/register/transpile-only ./scripts/duckdb-studio.ts",

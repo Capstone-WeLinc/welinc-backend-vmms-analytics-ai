@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { SyncService } from './sync.service';
+import { AnalyticsAccess } from '../auth/analytics-access';
 
 @Controller()
 export class AnalyticsController {
@@ -9,12 +10,13 @@ export class AnalyticsController {
     private readonly syncService: SyncService,
   ) {}
 
-  @Post('sync')
-  @Post('analytics/sync')
+  @AnalyticsAccess('admin')
+  @Post(['sync', 'analytics/sync'])
   async triggerSync() {
     return this.syncService.syncNow();
   }
 
+  @AnalyticsAccess('public')
   @Get('health')
   getHealth() {
     return this.analyticsService.getHealth();
@@ -134,18 +136,20 @@ export class AnalyticsController {
     return this.analyticsService.getScheduleWorkOrders(mechanic, status, limit);
   }
 
+  @AnalyticsAccess('assigned')
   @Get('workorders/item/:id')
   getWorkOrderItem(@Param('id') id: string) {
     return this.analyticsService.getWorkOrderById(id);
   }
 
+  @AnalyticsAccess('assigned')
   @Get('analytics/workorders/item/:id')
   getWorkOrderItemLegacy(@Param('id') id: string) {
     return this.analyticsService.getWorkOrderById(id);
   }
 
+  @AnalyticsAccess('assigned')
   @Get('workorders/recommendations/:id')
-  @Post('workorders/recommendations/:id')
   getWorkOrderRecommendations(
     @Param('id') id: string,
     @Query('title') queryTitle?: string,
@@ -159,6 +163,15 @@ export class AnalyticsController {
       body?.checklistItems ||
       (itemsQuery ? itemsQuery.split('|').filter(Boolean).map((text) => ({ text })) : undefined);
     return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle, checklistItems);
+  }
+
+  @AnalyticsAccess('assigned')
+  @Post('workorders/recommendations/:id')
+  postWorkOrderRecommendations(
+    @Param('id') id: string,
+    @Body() body?: { title?: string; vehicle?: string; checklistItems?: Array<{ text: string }> },
+  ) {
+    return this.analyticsService.getWorkOrderRecommendations(id, body?.title, body?.vehicle, body?.checklistItems);
   }
 }
 
