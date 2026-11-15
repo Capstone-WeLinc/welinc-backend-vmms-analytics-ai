@@ -70,8 +70,9 @@ test('analytics HTTP authorization and response boundaries', async (t) => {
     const token = req.headers.authorization?.split(' ')[1] ?? '';
     if (token === 'forbidden') { res.writeHead(403).end('{}'); return; }
     if (!users[token]) { res.writeHead(401).end('{}'); return; }
-    if (req.url?.startsWith('/auth/me')) {
-      res.end(JSON.stringify(users[token]));
+    if (req.url?.startsWith('/auth/session')) {
+      const user = users[token];
+      res.end(JSON.stringify({ active: true, expiresAt: new Date(Date.now() + 60000).toISOString(), user: { id: user?.id ?? token, name: token, email: `${token.toLowerCase()}@example.test` } }));
     } else if (req.url?.startsWith('/maintenance-schedules')) {
       // Deliberately return all rows: analytics must independently compare IDs.
       res.end(JSON.stringify(coreMode === 'badSchedules' ? { schedules } : schedules));

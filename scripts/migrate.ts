@@ -573,7 +573,7 @@ async function main(): Promise<void> {
       console.log('Done (pgvector C extension unavailable; using JSONB fallback mode).');
     }
 
-    if (pgvectorEnabled) {
+    if (pgvectorEnabled && process.env['GEMINI_API_KEY']) {
       const sources: EmbeddingSource[] = [];
       for (const schedule of schedules) {
         const vehicle = vehicleById.get(schedule.vehicleId);
@@ -634,6 +634,8 @@ async function main(): Promise<void> {
       }
       await replaceEmbeddings(prisma, sources, embeddings);
       console.log(`Done. ${embeddings.length} embeddings stored.`);
+    } else if (!process.env['GEMINI_API_KEY']) {
+      console.log('Skipping embedding generation because GEMINI_API_KEY is not configured.');
     } else {
       console.log('Skipping embedding generation because pgvector is unavailable.');
     }

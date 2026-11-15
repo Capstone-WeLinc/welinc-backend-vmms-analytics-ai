@@ -1,9 +1,21 @@
 import {
-  CallHandler, CanActivate, ExecutionContext, ForbiddenException, Injectable,
-  NestInterceptor, ServiceUnavailableException, SetMetadata, UnauthorizedException,
+  CallHandler,
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NestInterceptor,
+  ServiceUnavailableException,
+  SetMetadata,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
+import type { Request } from 'express';
 import { map } from 'rxjs/operators';
+import { AccountCheck } from './account-check';
+import { checkPerson, TOKEN_VERIFIER } from './verify/guards';
+import { TokenVerifier } from './verify/token-verifier';
 
 type AccessPolicy = 'public' | 'fleet' | 'admin' | 'assigned';
 type VmmsRole = 'ADMIN' | 'OPERATIONS' | 'CHIEF_MECHANIC' | 'MECHANIC';
@@ -11,8 +23,7 @@ type JsonRecord = Record<string, unknown>;
 const ACCESS_POLICY = 'vmms:analytics-access';
 export const AnalyticsAccess = (policy: AccessPolicy) => SetMetadata(ACCESS_POLICY, policy);
 
-interface AnalyticsRequest {
-  headers: { authorization?: string };
+interface AnalyticsRequest extends Request {
   params: { id?: string };
   analyticsAccess?: { role: VmmsRole; scheduleStatus?: string };
 }
@@ -23,31 +34,27 @@ function isRecord(value: unknown): value is JsonRecord {
 
 @Injectable()
 export class AnalyticsAccessGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  private readonly vmmsApiBaseUrl: string;
+
+  constructor(
+    private readonly reflector: Reflector,
+    @Inject(TOKEN_VERIFIER) private readonly verifier: TokenVerifier,
+    private readonly accountCheck: AccountCheck,
+    config: ConfigService,
+  ) {
+    this.vmmsApiBaseUrl = (config.get<string>('VMMS_API_BASE_URL') ?? '').replace(/\/+$/, '');
+  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    // New business endpoints are fleet-only unless explicitly scoped otherwise.
     const policy = this.reflector.getAllAndOverride<AccessPolicy>(ACCESS_POLICY, [
       context.getHandler(), context.getClass(),
     ]) ?? 'fleet';
     if (policy === 'public') return true;
 
     const request = context.switchToHttp().getRequest<AnalyticsRequest>();
-    const authorization = request.headers.authorization;
-    if (typeof authorization !== 'string' || !/^Bearer [^\s]+$/i.test(authorization)) {
-      throw new UnauthorizedException('A valid bearer session is required.');
-    }
-
-    // The core API verifies the signature, expiry, lockout and current account state.
-    // Do not cache roles or assignments from JWT claims or the analytics snapshot.
-    const user = await this.coreGet('auth/me?system=VMMS', authorization);
-    if (!isRecord(user) || typeof user.id !== 'string' || !user.id ||
-        user.isActive !== true || user.isLocked !== false || user.lockedAt != null ||
-        !Array.isArray(user.roles)) {
-      throw new UnauthorizedException('Invalid session.');
-    }
-    const roles = user.roles.filter((entry): entry is JsonRecord =>
-      isRecord(entry) && entry.system === 'VMMS');
+    const { raw, token } = await checkPerson(this.verifier, request);
+    const { user } = await this.accountCheck.confirm(raw, token);
+    const roles = user.roles.filter((entry) => entry.system === 'VMMS');
     const role = roles[0]?.role as VmmsRole;
     if (roles.length !== 1 || !['ADMIN', 'OPERATIONS', 'CHIEF_MECHANIC', 'MECHANIC'].includes(role)) {
       throw new ForbiddenException('A single valid VMMS role is required.');
@@ -61,16 +68,14 @@ export class AnalyticsAccessGuard implements CanActivate {
     if (policy === 'assigned') {
       const id = request.params.id;
       if (!id) throw new ForbiddenException('A current work order is required.');
-      const schedules = await this.coreGet('maintenance-schedules?system=VMMS', authorization);
+      const schedules = await this.coreGet('maintenance-schedules?system=VMMS', raw);
       if (!Array.isArray(schedules)) {
         throw new ServiceUnavailableException('Work order access could not be verified.');
       }
       const schedule = schedules.find((entry): entry is JsonRecord =>
         isRecord(entry) && entry.id === id && entry.deletedAt == null);
-      // Check stable user IDs as well as the core API's scoped response. Names and
-      // client-supplied mechanic filters must never grant access.
       if (!schedule || (!fleet && (
-        role === 'MECHANIC' ? schedule.assignedMechanicId !== user.id : schedule.chiefMechanicId !== user.id
+        role === 'MECHANIC' ? schedule.assignedMechanicId !== user.sub : schedule.chiefMechanicId !== user.sub
       ))) {
         throw new ForbiddenException('You cannot access this work order.');
       }
@@ -79,20 +84,19 @@ export class AnalyticsAccessGuard implements CanActivate {
     return true;
   }
 
-  private async coreGet(path: string, authorization: string): Promise<unknown> {
-    const base = (process.env.VMMS_API_BASE_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  private async coreGet(path: string, token: string): Promise<unknown> {
     let response: Response;
     try {
-      response = await fetch(`${base}/${path}`, {
-        headers: { Authorization: authorization, Accept: 'application/json' },
+      response = await fetch(`${this.vmmsApiBaseUrl}/${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
         signal: AbortSignal.timeout(5000),
         redirect: 'error',
       });
     } catch {
       throw new ServiceUnavailableException('Session verification is temporarily unavailable.');
     }
-    if (response.status === 401) throw new UnauthorizedException('Invalid session.');
-    if (response.status === 403) throw new ForbiddenException('Access denied by the core API.');
+    if (response.status === 401) throw new ServiceUnavailableException('The VMMS API refused the current session.');
+    if (response.status === 403) throw new ForbiddenException('Access denied by the VMMS API.');
     if (!response.ok) throw new ServiceUnavailableException('Access verification is temporarily unavailable.');
     try {
       return await response.json();
@@ -116,8 +120,6 @@ export class AnalyticsResponseInterceptor implements NestInterceptor {
     if (!access || access.role === 'ADMIN' || access.role === 'OPERATIONS') return next.handle();
     return next.handle().pipe(map((result: unknown) => {
       if (!isRecord(result)) throw new ServiceUnavailableException('Invalid work order response.');
-      // Allowlist the mobile response, including nested records; future analytics
-      // fields and raw progress JSON must not silently expose financial data.
       const output = pickScalars(result, ['scheduleId', 'title', 'vehiclePlate', 'aiRecommendations']);
       if (isRecord(result.workOrder)) {
         const fields = ['scheduleId', 'vehiclePlate', 'maintenanceTitle', 'triggerType',
