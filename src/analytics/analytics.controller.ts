@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, ServiceUnavailableException } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { SyncService } from './sync.service';
 import { AnalyticsAccess } from '../auth/analytics-access';
@@ -18,8 +18,11 @@ export class AnalyticsController {
 
   @AnalyticsAccess('public')
   @Get('health')
-  getHealth() {
-    return this.analyticsService.getHealth();
+  async getHealth() {
+    if (!(await this.syncService.checkDatabase())) {
+      throw new ServiceUnavailableException({ status: 'unavailable', service: 'welinc-backend-vmms-analytics-ai', database: 'failed' });
+    }
+    return { status: 'ok', service: 'welinc-backend-vmms-analytics-ai', database: 'ok', mode: 'microservice', port: process.env['PORT'] ?? 3001 };
   }
 
   @Get('overview')
@@ -174,4 +177,3 @@ export class AnalyticsController {
     return this.analyticsService.getWorkOrderRecommendations(id, body?.title, body?.vehicle, body?.checklistItems);
   }
 }
-
