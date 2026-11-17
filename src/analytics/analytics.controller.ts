@@ -151,7 +151,7 @@ export class AnalyticsController {
     return this.analyticsService.getWorkOrderById(id);
   }
 
-  @AnalyticsAccess('assigned')
+  @AnalyticsAccess('assigned-ai')
   @Get('workorders/recommendations/:id')
   getWorkOrderRecommendations(
     @Param('id') id: string,
@@ -168,7 +168,7 @@ export class AnalyticsController {
     return this.analyticsService.getWorkOrderRecommendations(id, title, vehicle, checklistItems);
   }
 
-  @AnalyticsAccess('assigned')
+  @AnalyticsAccess('assigned-ai')
   @Post('workorders/recommendations/:id')
   postWorkOrderRecommendations(
     @Param('id') id: string,

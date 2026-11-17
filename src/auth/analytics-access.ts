@@ -3,6 +3,8 @@ import {
   CanActivate,
   ExecutionContext,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   NestInterceptor,
@@ -17,7 +19,7 @@ import { AccountCheck } from './account-check';
 import { checkPerson, TOKEN_VERIFIER } from './verify/guards';
 import { TokenVerifier } from './verify/token-verifier';
 
-type AccessPolicy = 'public' | 'fleet' | 'admin' | 'assigned';
+type AccessPolicy = 'public' | 'fleet' | 'admin' | 'assigned' | 'assigned-ai';
 type VmmsRole = 'ADMIN' | 'OPERATIONS' | 'CHIEF_MECHANIC' | 'MECHANIC';
 type JsonRecord = Record<string, unknown>;
 const ACCESS_POLICY = 'vmms:analytics-access';
@@ -28,6 +30,13 @@ interface AnalyticsRequest extends Request {
   analyticsAccess?: { role: VmmsRole; scheduleStatus?: string };
 }
 
+const AI_RATE_WINDOW_MS = 60_000;
+const AI_USER_LIMIT_PER_WINDOW = 5;
+const AI_SERVICE_LIMIT_PER_WINDOW = 12;
+const AI_RATE_LIMIT_MAX_USERS = 5_000;
+
+type RateWindow = { startedAt: number; count: number };
+
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -35,6 +44,8 @@ function isRecord(value: unknown): value is JsonRecord {
 @Injectable()
 export class AnalyticsAccessGuard implements CanActivate {
   private readonly vmmsApiBaseUrl: string;
+  private readonly recommendationWindows = new Map<string, RateWindow>();
+  private serviceWindow: RateWindow = { startedAt: 0, count: 0 };
 
   constructor(
     private readonly reflector: Reflector,
@@ -65,7 +76,7 @@ export class AnalyticsAccessGuard implements CanActivate {
     }
     request.analyticsAccess = { role };
 
-    if (policy === 'assigned') {
+    if (policy === 'assigned' || policy === 'assigned-ai') {
       const id = request.params.id;
       if (!id) throw new ForbiddenException('A current work order is required.');
       const schedules = await this.coreGet('maintenance-schedules?system=VMMS', raw);
@@ -81,7 +92,36 @@ export class AnalyticsAccessGuard implements CanActivate {
       }
       request.analyticsAccess.scheduleStatus = String(schedule.status);
     }
+    if (policy === 'assigned-ai') this.consumeRecommendationBudget(user.sub);
     return true;
+  }
+
+  private consumeRecommendationBudget(userId: string): void {
+    const now = Date.now();
+    if (now - this.serviceWindow.startedAt >= AI_RATE_WINDOW_MS) {
+      this.serviceWindow = { startedAt: now, count: 0 };
+    }
+
+    let userWindow = this.recommendationWindows.get(userId);
+    if (!userWindow || now - userWindow.startedAt >= AI_RATE_WINDOW_MS) {
+      if (!userWindow && this.recommendationWindows.size >= AI_RATE_LIMIT_MAX_USERS) {
+        for (const [key, window] of this.recommendationWindows) {
+          if (now - window.startedAt >= AI_RATE_WINDOW_MS) this.recommendationWindows.delete(key);
+        }
+      }
+      if (!userWindow && this.recommendationWindows.size >= AI_RATE_LIMIT_MAX_USERS) {
+        throw new HttpException('AI recommendation capacity is temporarily busy.', HttpStatus.TOO_MANY_REQUESTS);
+      }
+      userWindow = { startedAt: now, count: 0 };
+    }
+
+    if (userWindow.count >= AI_USER_LIMIT_PER_WINDOW || this.serviceWindow.count >= AI_SERVICE_LIMIT_PER_WINDOW) {
+      throw new HttpException('AI recommendation limit reached. Try again shortly.', HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    userWindow.count++;
+    this.recommendationWindows.set(userId, userWindow);
+    this.serviceWindow.count++;
   }
 
   private async coreGet(path: string, token: string): Promise<unknown> {

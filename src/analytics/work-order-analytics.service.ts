@@ -1,6 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { DuckDbDataMartService } from './duckdb-datamart.service';
 import { GeminiAiService } from './gemini-ai.service';
+
+const MAX_RECOMMENDATION_ITEMS = 20;
+const MAX_RECOMMENDATION_ITEM_LENGTH = 250;
+const MAX_RECOMMENDATION_INPUT_LENGTH = 3_000;
+const MAX_RECOMMENDATION_TITLE_LENGTH = 120;
+const MAX_RECOMMENDATION_VEHICLE_LENGTH = 80;
+
+function boundedText(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new BadRequestException(`${field} must be text.`);
+  const text = value.trim();
+  if (text.length > maxLength) throw new BadRequestException(`${field} is too long.`);
+  return text || undefined;
+}
 
 @Injectable()
 export class WorkOrderAnalyticsService {
@@ -290,10 +304,32 @@ export class WorkOrderAnalyticsService {
     customVehicle?: string,
     checklistItems?: Array<{ text: string }> | string[],
   ) {
-    let title = customTitle || 'Maintenance Work Order';
-    let vehiclePlate = customVehicle || 'Vehicle';
-    let workOrderData: any = null;
+    let title = boundedText(customTitle, 'Title', MAX_RECOMMENDATION_TITLE_LENGTH) || 'Maintenance Work Order';
+    let vehiclePlate = boundedText(customVehicle, 'Vehicle', MAX_RECOMMENDATION_VEHICLE_LENGTH) || 'Vehicle';
+    if (checklistItems !== undefined && !Array.isArray(checklistItems)) {
+      throw new BadRequestException('Checklist items must be a list.');
+    }
+    if ((checklistItems?.length ?? 0) > MAX_RECOMMENDATION_ITEMS) {
+      throw new BadRequestException(`Checklist items cannot exceed ${MAX_RECOMMENDATION_ITEMS}.`);
+    }
+    const items: string[] = (checklistItems ?? []).map((item) => {
+      const text = typeof item === 'string'
+        ? item
+        : item && typeof item === 'object' && typeof item.text === 'string'
+          ? item.text
+          : undefined;
+      if (text === undefined) throw new BadRequestException('Each checklist item must contain text.');
+      const normalized = text.trim();
+      if (normalized.length > MAX_RECOMMENDATION_ITEM_LENGTH) {
+        throw new BadRequestException(`Checklist items cannot exceed ${MAX_RECOMMENDATION_ITEM_LENGTH} characters each.`);
+      }
+      return normalized;
+    }).filter(Boolean);
+    if (items.reduce((total, item) => total + item.length, 0) > MAX_RECOMMENDATION_INPUT_LENGTH) {
+      throw new BadRequestException(`Checklist text cannot exceed ${MAX_RECOMMENDATION_INPUT_LENGTH} characters in total.`);
+    }
 
+    let workOrderData: any = null;
     try {
       const res = await this.getWorkOrderById(id);
       workOrderData = res.workOrder;
@@ -302,10 +338,6 @@ export class WorkOrderAnalyticsService {
     } catch {
       // Allow standalone recommendations if scheduleId is virtual or missing
     }
-
-    const items: string[] = (checklistItems ?? [])
-      .map((item) => (typeof item === 'string' ? item : item?.text ?? String(item)))
-      .filter(Boolean);
 
     const steps = items.length
       ? items.map((itemText, idx) => ({
