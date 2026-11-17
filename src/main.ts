@@ -6,11 +6,9 @@ dotenv.config();
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.setGlobalPrefix('analytics', {
-    exclude: ['maintenance-schedules/search', 'maintenance-schedules/(.*)'],
-  });
+  app.setGlobalPrefix('vmms/analytics');
   app.enableCors();
-  await app.listen(process.env.PORT ?? 3001);
+  await app.listen(process.env.PORT ?? 3011);
 }
 
 bootstrap();

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { AnalyticsController } from './analytics/analytics.controller';
 import { AnalyticsService } from './analytics/analytics.service';
 import { SyncService } from './analytics/sync.service';
@@ -10,7 +11,7 @@ import { WorkOrderAnalyticsService } from './analytics/work-order-analytics.serv
 import { AnalyticsAccessModule } from './auth/analytics-access.module';
 
 @Module({
-  imports: [AnalyticsAccessModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), AnalyticsAccessModule],
   controllers: [AnalyticsController, MaintenanceSchedulesController],
   providers: [
     DuckDbDataMartService,

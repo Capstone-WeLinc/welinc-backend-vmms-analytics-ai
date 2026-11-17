@@ -7,6 +7,7 @@ import {
 import { MaintenanceStatus, PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
+import { ServiceUnavailableException } from '@nestjs/common';
 import {
   initializeDataMart,
   MaintenanceAlertRow,
@@ -22,6 +23,11 @@ import {
 } from './duckdb';
 import { AnalyticsService } from './analytics.service';
 import { DuckDbDataMartService } from './duckdb-datamart.service';
+
+function dbPoolLimit(): number {
+  const value = Number(process.env['DB_POOL_MAX']);
+  return Number.isSafeInteger(value) && value > 0 ? value : 2;
+}
 
 const STATUS_ORDER = [
   MaintenanceStatus.PENDING,
@@ -198,10 +204,9 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.pool = new pg.Pool({ connectionString });
+    this.pool = new pg.Pool({ connectionString, max: Math.max(1, dbPoolLimit() - 1), connectionTimeoutMillis: 2000, query_timeout: 2000 });
     this.prisma = new PrismaClient({ adapter: new PrismaPg(this.pool) });
 
-    await this.installPostgresTriggers();
 
     const syncOnStartup = process.env['SYNC_ON_STARTUP'] !== 'false';
     if (syncOnStartup) {
@@ -226,45 +231,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
     }, intervalMs);
 
     // Setup PostgreSQL LISTEN/NOTIFY for real-time updates
-    this.setupListenNotify(connectionString);
-  }
-
-  private async installPostgresTriggers(): Promise<void> {
-    if (!this.pool) return;
-    try {
-      await this.pool.query(`
-        CREATE OR REPLACE FUNCTION notify_vmms_table_change()
-        RETURNS trigger AS $$
-        BEGIN
-          PERFORM pg_notify('vmms_data_changed', TG_TABLE_NAME);
-          PERFORM pg_notify(TG_TABLE_NAME || '_changed', TG_TABLE_NAME);
-          RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-
-        DO $$
-        BEGIN
-          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'vehicles') THEN
-            DROP TRIGGER IF EXISTS trg_vehicles_notify ON vehicles;
-            CREATE TRIGGER trg_vehicles_notify
-            AFTER INSERT OR UPDATE OR DELETE ON vehicles
-            FOR EACH STATEMENT EXECUTE FUNCTION notify_vmms_table_change();
-          END IF;
-
-          IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'maintenance_schedules') THEN
-            DROP TRIGGER IF EXISTS trg_maintenance_schedules_notify ON maintenance_schedules;
-            CREATE TRIGGER trg_maintenance_schedules_notify
-            AFTER INSERT OR UPDATE OR DELETE ON maintenance_schedules
-            FOR EACH STATEMENT EXECUTE FUNCTION notify_vmms_table_change();
-          END IF;
-        END $$;
-      `);
-      this.logger.log(
-        'Successfully installed PostgreSQL NOTIFY triggers for real-time table sync.',
-      );
-    } catch (err) {
-      this.logger.warn(`Failed to install PostgreSQL triggers: ${err}`);
-    }
+    if (dbPoolLimit() > 1) this.setupListenNotify(connectionString);
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -330,6 +297,16 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
     }, debounceMs);
   }
 
+  async checkDatabase(): Promise<boolean> {
+    if (!this.pool) return false;
+    try {
+      await this.pool.query('SELECT 1');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async syncNow(): Promise<{ success: boolean; message: string }> {
     if (this.isSyncing) {
       return { success: true, message: 'Sync already in progress.' };
@@ -339,7 +316,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
       if (!connectionString) {
         throw new Error('DATABASE_URL is not configured.');
       }
-      this.pool = new pg.Pool({ connectionString });
+      this.pool = new pg.Pool({ connectionString, max: Math.max(1, dbPoolLimit() - 1), connectionTimeoutMillis: 2000, query_timeout: 2000 });
       this.prisma = new PrismaClient({ adapter: new PrismaPg(this.pool) });
     }
 

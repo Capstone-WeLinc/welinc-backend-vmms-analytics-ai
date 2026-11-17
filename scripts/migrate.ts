@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { MaintenanceStatus, PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
@@ -23,7 +25,8 @@ import {
   SOURCE_TYPES,
 } from './pgvector';
 
-const pool = new pg.Pool({ connectionString: process.env['DATABASE_URL'] });
+const dbPoolMax = Number.isSafeInteger(Number(process.env['DB_POOL_MAX'])) && Number(process.env['DB_POOL_MAX']) > 0 ? Number(process.env['DB_POOL_MAX']) : 2;
+const pool = new pg.Pool({ connectionString: process.env['DATABASE_URL'], max: dbPoolMax });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -182,7 +185,30 @@ function lastSixMonthKeys(generatedAt: Date): string[] {
   });
 }
 
+async function applyInfrastructureMigration(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('CREATE TABLE IF NOT EXISTS public.vmms_analytics_schema_migrations (id TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(1742761042)');
+    const migrationId = '0001-hosting-infrastructure';
+    const applied = await client.query('SELECT 1 FROM public.vmms_analytics_schema_migrations WHERE id = $1', [migrationId]);
+    if (applied.rowCount === 0) {
+      const sql = await readFile(join(__dirname, 'migrations', `${migrationId}.sql`), 'utf8');
+      await client.query(sql);
+      await client.query('INSERT INTO public.vmms_analytics_schema_migrations (id) VALUES ($1)', [migrationId]);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function main(): Promise<void> {
+  await applyInfrastructureMigration();
   const analyticsOnly = process.argv.includes('--analytics-only');
   const duckdb = await openDataMart();
   try {
@@ -573,7 +599,10 @@ async function main(): Promise<void> {
       console.log('Done (pgvector C extension unavailable; using JSONB fallback mode).');
     }
 
-    if (pgvectorEnabled) {
+    const skipEmbeddings = process.argv.includes('--skip-embeddings');
+    if (skipEmbeddings) {
+      console.log('Skipping embedding generation (--skip-embeddings).');
+    } else if (pgvectorEnabled && process.env['GEMINI_API_KEY']) {
       const sources: EmbeddingSource[] = [];
       for (const schedule of schedules) {
         const vehicle = vehicleById.get(schedule.vehicleId);
@@ -634,6 +663,8 @@ async function main(): Promise<void> {
       }
       await replaceEmbeddings(prisma, sources, embeddings);
       console.log(`Done. ${embeddings.length} embeddings stored.`);
+    } else if (!process.env['GEMINI_API_KEY']) {
+      console.log('Skipping embedding generation because GEMINI_API_KEY is not configured.');
     } else {
       console.log('Skipping embedding generation because pgvector is unavailable.');
     }

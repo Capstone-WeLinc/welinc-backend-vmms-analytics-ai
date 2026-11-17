@@ -3,12 +3,19 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { NestFactory } from '@nestjs/core';
 import { AnalyticsController } from '../src/analytics/analytics.controller';
 import { MaintenanceSchedulesController } from '../src/analytics/maintenance-schedules.controller';
 import { AnalyticsService } from '../src/analytics/analytics.service';
 import { SyncService } from '../src/analytics/sync.service';
-import { AnalyticsAccessModule } from '../src/auth/analytics-access.module';
+import { AnalyticsAccessGuard, AnalyticsResponseInterceptor } from '../src/auth/analytics-access';
+import { AccountCheck } from '../src/auth/account-check';
+import { TOKEN_VERIFIER } from '../src/auth/verify/guards';
+import { TokenCheckError } from '../src/auth/verify/token-verifier';
+
+let testUsers: Record<string, any> = {};
 
 let businessCalls = 0;
 const detail = {
@@ -34,17 +41,28 @@ for (const name of ['getWorkOrderById', 'getWorkOrderRecommendations', 'getSched
 }
 
 @Module({
-  imports: [AnalyticsAccessModule],
   controllers: [AnalyticsController, MaintenanceSchedulesController],
   providers: [
     { provide: AnalyticsService, useValue: analytics },
-    { provide: SyncService, useValue: { syncNow: () => { businessCalls++; return { synced: true }; } } },
+    { provide: ConfigService, useValue: { get: (key: string) => process.env[key] } },
+    AccountCheck,
+    { provide: TOKEN_VERIFIER, useValue: { verify: async (raw: string) => {
+      if (raw === 'expired') throw new TokenCheckError('expired', 'test token expired');
+      if (raw === 'forged') throw new TokenCheckError('invalid', 'test token invalid');
+      const identity = raw === 'forbidden' ? testUsers.ADMIN : testUsers[raw];
+      if (!identity || identity.isActive === false || identity.isLocked === true) throw new TokenCheckError('invalid', 'test identity unavailable');
+      return { tokenUse: 'user', sub: identity.id, email: `${raw.toLowerCase()}@example.test`, aud: 'VMMS', clientId: 'vmms-mobile', roles: identity.roles, exp: Math.floor(Date.now() / 1000) + 60, jti: raw, sid: raw };
+    } } },
+    { provide: APP_GUARD, useClass: AnalyticsAccessGuard },
+    { provide: APP_INTERCEPTOR, useClass: AnalyticsResponseInterceptor },
+    { provide: SyncService, useValue: { checkDatabase: async () => true, syncNow: () => { businessCalls++; return { synced: true }; } } },
   ],
 })
 class TestAppModule {}
 
 test('analytics HTTP authorization and response boundaries', async (t) => {
   const users: Record<string, any> = {};
+  testUsers = users;
   for (const role of ['ADMIN', 'OPERATIONS', 'MECHANIC', 'CHIEF_MECHANIC']) {
     users[role] = { id: role, isActive: true, isLocked: false, lockedAt: null, roles: [{ role, system: 'VMMS' }] };
   }
@@ -62,7 +80,6 @@ test('analytics HTTP authorization and response boundaries', async (t) => {
   let coreMode = 'ok';
   const core = createServer((req, res) => {
     coreCalls++;
-    assert.equal(new URL(req.url!, 'http://localhost').searchParams.get('system'), 'VMMS');
     res.setHeader('Content-Type', 'application/json');
     if (coreMode === 'error') { res.writeHead(500).end('{}'); return; }
     if (coreMode === 'invalidJson') { res.end('invalid'); return; }
@@ -70,16 +87,20 @@ test('analytics HTTP authorization and response boundaries', async (t) => {
     const token = req.headers.authorization?.split(' ')[1] ?? '';
     if (token === 'forbidden') { res.writeHead(403).end('{}'); return; }
     if (!users[token]) { res.writeHead(401).end('{}'); return; }
-    if (req.url?.startsWith('/auth/me')) {
-      res.end(JSON.stringify(users[token]));
+    if (req.url?.startsWith('/auth/session')) {
+      const user = users[token];
+      res.end(JSON.stringify({ active: true, expiresAt: new Date(Date.now() + 60000).toISOString(), user: { id: user?.id ?? token, name: token, email: `${token.toLowerCase()}@example.test` } }));
     } else if (req.url?.startsWith('/maintenance-schedules')) {
+      assert.equal(new URL(req.url, 'http://localhost').searchParams.get('system'), 'VMMS');
       // Deliberately return all rows: analytics must independently compare IDs.
       res.end(JSON.stringify(coreMode === 'badSchedules' ? { schedules } : schedules));
     } else { res.writeHead(404).end('{}'); }
   });
   await new Promise<void>((resolve) => core.listen(0, '127.0.0.1', resolve));
   const previousBase = process.env.VMMS_API_BASE_URL;
-  process.env.VMMS_API_BASE_URL = `http://127.0.0.1:${(core.address() as { port: number }).port}`;
+  const previousAuthInternalUrl = process.env.AUTH_INTERNAL_URL;
+  process.env.VMMS_API_BASE_URL = 'http://127.0.0.1:' + (core.address() as { port: number }).port;
+  process.env.AUTH_INTERNAL_URL = process.env.VMMS_API_BASE_URL;
   const app = await NestFactory.create(TestAppModule, { logger: false });
   app.setGlobalPrefix('analytics', { exclude: ['maintenance-schedules/search', 'maintenance-schedules/(.*)'] });
   await app.listen(0, '127.0.0.1');
@@ -163,7 +184,9 @@ test('analytics HTTP authorization and response boundaries', async (t) => {
     });
     await t.test('invalid, revoked, cross-system and ambiguous roles fail closed', async () => {
       for (const token of ['expired', 'forged', 'inactive', 'locked']) await denied('/analytics/overview', token, 401);
-      for (const token of ['otherSystem', 'crossSystem', 'multipleRoles', 'forbidden']) await denied('/analytics/overview', token, 403);
+      await denied('/analytics/overview', 'otherSystem', 401);
+      for (const token of ['crossSystem', 'multipleRoles']) await denied('/analytics/overview', token, 403);
+      await denied('/analytics/overview', 'forbidden', 503);
       assert.equal((await request('/analytics/overview', 'ADMIN')).status, 200);
       users.ADMIN.isActive = false;
       await denied('/analytics/overview', 'ADMIN', 401);
@@ -174,16 +197,22 @@ test('analytics HTTP authorization and response boundaries', async (t) => {
     await t.test('upstream failures, redirects and invalid payloads never fall back to public data', async () => {
       for (const mode of ['error', 'invalidJson', 'redirect']) {
         coreMode = mode;
+        app.get(AccountCheck).forget('OPERATIONS');
         await denied('/analytics/overview', 'OPERATIONS', 503);
       }
       coreMode = 'badSchedules';
       await denied('/analytics/workorders/item/owned', 'MECHANIC', 503);
       coreMode = 'ok';
     });
+  } catch (error) {
+    console.error(error);
+    throw error;
   } finally {
     await app.close();
     await new Promise<void>((resolve, reject) => core.close((error) => error ? reject(error) : resolve()));
     if (previousBase === undefined) delete process.env.VMMS_API_BASE_URL;
     else process.env.VMMS_API_BASE_URL = previousBase;
+    if (previousAuthInternalUrl === undefined) delete process.env.AUTH_INTERNAL_URL;
+    else process.env.AUTH_INTERNAL_URL = previousAuthInternalUrl;
   }
 });

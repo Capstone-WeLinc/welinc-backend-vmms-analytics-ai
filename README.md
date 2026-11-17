@@ -20,12 +20,12 @@ If the analytics database is not yet prepared, `npm run migrate` will initialize
 
 ## Service endpoints
 
-Business endpoints require the existing VMMS bearer token. Set
-`VMMS_API_BASE_URL` to the core backend (default `http://localhost:3000`;
-Docker Compose uses `http://backend-vmms:3000`). Every request checks the current
-account with `/auth/me`; work-order details also verify the current assignment
-with `/maintenance-schedules`. If verification fails or the core API is unavailable,
-analytics denies access rather than relying on stale roles or assignments.
+Business endpoints require a VMMS bearer token. Analytics validates its
+signature and audience against welinc-auth's published keys and checks session
+status directly with welinc-auth. Set `VMMS_API_BASE_URL` to the core API
+(Docker Compose uses `http://vmms-backend:3010/vmms`). Assigned work-order
+details are checked against the core maintenance-schedules route using the
+caller's own token.
 
 Fleet summaries, searches, reports and aggregate AI insights require Admin or
 Operations. Manual sync requires Admin. Mechanic and Chief Mechanic can access

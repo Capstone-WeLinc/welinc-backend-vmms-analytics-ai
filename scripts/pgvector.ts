@@ -20,42 +20,11 @@ interface GeminiEmbeddingsResponse {
 }
 
 export async function enablePgvector(prisma: PrismaClient): Promise<{ hasVectorExtension: boolean }> {
-  let hasVectorExtension = true;
-  try {
-    await prisma.$executeRawUnsafe('CREATE EXTENSION IF NOT EXISTS vector');
-  } catch {
-    hasVectorExtension = false;
-  }
+  const result = await prisma.$queryRaw<Array<{ present: boolean }>>`
+    SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') AS present
+  `;
 
-  const embeddingType = hasVectorExtension ? 'VECTOR(1536)' : 'JSONB';
-
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS "maintenance_embeddings" (
-      "id" UUID PRIMARY KEY,
-      "scheduleId" UUID REFERENCES "maintenance_schedules"("id") ON DELETE CASCADE,
-      "templateId" UUID REFERENCES "checklist_templates"("id") ON DELETE CASCADE,
-      "sourceType" VARCHAR(32) NOT NULL,
-      "content" TEXT NOT NULL,
-      "embedding" ${embeddingType} NOT NULL,
-      "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      CONSTRAINT "maintenance_embeddings_source_check" CHECK (
-        ("sourceType" = 'MAINTENANCE_SCHEDULE' AND "scheduleId" IS NOT NULL AND "templateId" IS NULL)
-        OR
-        ("sourceType" = 'CHECKLIST_TEMPLATE' AND "scheduleId" IS NULL AND "templateId" IS NOT NULL)
-      )
-    )
-  `);
-  await prisma.$executeRawUnsafe(
-    `CREATE UNIQUE INDEX IF NOT EXISTS "maintenance_embeddings_schedule_key" ON "maintenance_embeddings"("scheduleId") WHERE "scheduleId" IS NOT NULL`,
-  );
-  await prisma.$executeRawUnsafe(
-    `CREATE UNIQUE INDEX IF NOT EXISTS "maintenance_embeddings_template_key" ON "maintenance_embeddings"("templateId") WHERE "templateId" IS NOT NULL`,
-  );
-  await prisma.$executeRawUnsafe(
-    `CREATE INDEX IF NOT EXISTS "maintenance_embeddings_source_idx" ON "maintenance_embeddings"("sourceType")`,
-  );
-
-  return { hasVectorExtension };
+  return { hasVectorExtension: result[0]?.present === true };
 }
 
 export async function generateEmbeddings(
@@ -151,7 +120,7 @@ export async function replaceEmbeddings(
   let hasVectorExtension = true;
   try {
     const colInfo = await prisma.$queryRaw<Array<{ data_type: string }>>`
-      SELECT data_type FROM information_schema.columns 
+      SELECT data_type FROM information_schema.columns
       WHERE table_name = 'maintenance_embeddings' AND column_name = 'embedding'
     `;
     if (colInfo[0]?.data_type === 'jsonb') {

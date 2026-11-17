@@ -116,8 +116,9 @@ export interface PreparedAnalyticsRows {
 }
 
 export async function openDataMart(): Promise<DuckDBConnection> {
+  const configuredPath = process.env['DUCKDB_PATH']?.trim();
   const databasePath = path.resolve(
-    process.env['DUCKDB_PATH'] ?? DEFAULT_DUCKDB_PATH,
+    configuredPath || DEFAULT_DUCKDB_PATH,
   );
   await mkdir(path.dirname(databasePath), { recursive: true });
   const instance = await DuckDBInstance.create(databasePath);
