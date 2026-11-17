@@ -9,9 +9,10 @@ import { GeminiAiService } from './analytics/gemini-ai.service';
 import { VehicleKpiService } from './analytics/vehicle-kpi.service';
 import { WorkOrderAnalyticsService } from './analytics/work-order-analytics.service';
 import { AnalyticsAccessModule } from './auth/analytics-access.module';
+import { validateEnv } from './config/env';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), AnalyticsAccessModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }), AnalyticsAccessModule],
   controllers: [AnalyticsController, MaintenanceSchedulesController],
   providers: [
     DuckDbDataMartService,
