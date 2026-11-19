@@ -21,7 +21,7 @@
     "inference": "node -r ts-node/register/transpile-only ./scripts/vmms-ai-inference.ts"
   },
   "dependencies": {
-    "@duckdb/node-api": "^1.5.4-r.1",
+    "@duckdb/node-api": "^2.0.0-r.1",
     "@nestjs/common": "11.2.3",
     "@nestjs/config": "^12.1.1",
     "@nestjs/core": "11.2.3",
