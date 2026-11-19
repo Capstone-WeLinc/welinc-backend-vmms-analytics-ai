@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
-    "@types/node": "^20.19.0",
+    "@types/node": "^26.6.6",
     "ts-loader": "^9.5.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
