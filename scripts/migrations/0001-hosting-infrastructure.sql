@@ -1,4 +1,10 @@
-CREATE EXTENSION IF NOT EXISTS vector;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
+    CREATE EXTENSION vector;
+  END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION notify_vmms_table_change()
 RETURNS trigger AS $$

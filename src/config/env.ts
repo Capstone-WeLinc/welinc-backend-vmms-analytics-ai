@@ -7,7 +7,12 @@ export type Env = {
   VMMS_API_BASE_URL: string;
 };
 
-const PRODUCTION_URLS = ['AUTH_JWKS_URL', 'VMMS_API_BASE_URL', 'GEMINI_API_URL'] as const;
+const PRODUCTION_URLS = [
+  'AUTH_JWKS_URL',
+  'AUTH_INTERNAL_URL',
+  'VMMS_API_BASE_URL',
+  'GEMINI_API_URL',
+] as const;
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function productionUrlProblem(value: string): string | null {

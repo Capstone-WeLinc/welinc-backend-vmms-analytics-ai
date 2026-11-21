@@ -48,6 +48,7 @@
   },
   "overrides": {
     "body-parser": "^2.4.0",
+    "effect": "3.22.5",
     "multer": "^2.5.0",
     "qs": "^6.17.0"
   }
