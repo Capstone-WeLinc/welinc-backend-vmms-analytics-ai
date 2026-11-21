@@ -27,11 +27,18 @@ test('production URL validation', async (t) => {
     }), /AUTH_JWKS_URL must not point at localhost in production/);
   });
 
-  await t.test('allows the internal auth URL to use HTTP in production', () => {
-    assert.doesNotThrow(() => validateEnv({
+  await t.test('rejects an internal auth URL using HTTP in production', () => {
+    assert.throws(() => validateEnv({
       NODE_ENV: 'production',
       AUTH_INTERNAL_URL: 'http://auth-service:3001',
-    }));
+    }), /AUTH_INTERNAL_URL must use https in production/);
+  });
+
+  await t.test('rejects an internal auth URL pointing at localhost in production', () => {
+    assert.throws(() => validateEnv({
+      NODE_ENV: 'production',
+      AUTH_INTERNAL_URL: 'https://localhost:3001',
+    }), /AUTH_INTERNAL_URL must not point at localhost in production/);
   });
 
   await t.test('allows local HTTP URLs in development', () => {
