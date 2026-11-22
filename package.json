@@ -18,7 +18,8 @@
     "migrate": "node -r ts-node/register/transpile-only ./scripts/migrate.ts",
     "migrate:seed": "node -r ts-node/register/transpile-only ./scripts/migrate-analytics.ts",
     "ai:inference": "node -r ts-node/register/transpile-only ./scripts/vmms-ai-inference.ts",
-    "inference": "node -r ts-node/register/transpile-only ./scripts/vmms-ai-inference.ts"
+    "inference": "node -r ts-node/register/transpile-only ./scripts/vmms-ai-inference.ts",
+    "migrate:deploy": "npm run migrate -- --skip-embeddings"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.4-r.1",
