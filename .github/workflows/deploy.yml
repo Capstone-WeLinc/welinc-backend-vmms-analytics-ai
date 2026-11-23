@@ -54,7 +54,7 @@ jobs:
       ACR: ${{ vars.ACR_NAME }}
       RG: ${{ vars.RESOURCE_GROUP_STAGING }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
