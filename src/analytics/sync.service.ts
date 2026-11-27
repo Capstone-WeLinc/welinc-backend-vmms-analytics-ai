@@ -20,6 +20,7 @@ import {
   replaceVehicleSummary,
   VehicleMaintenanceKpiRow,
   VehicleSummaryRow,
+  createAnalyticsSourceRevision,
 } from './duckdb';
 import { AnalyticsService } from './analytics.service';
 import { DuckDbDataMartService } from './duckdb-datamart.service';
@@ -33,6 +34,7 @@ const STATUS_ORDER = [
   MaintenanceStatus.PENDING,
   MaintenanceStatus.DUE,
   MaintenanceStatus.IN_PROGRESS,
+  MaintenanceStatus.DONE,
   MaintenanceStatus.COMPLETED,
   MaintenanceStatus.OVERDUE,
   MaintenanceStatus.CANCELLED,
@@ -41,12 +43,41 @@ const STATUS_ORDER = [
 const ACTIVE_STATUSES = new Set<MaintenanceStatus>([
   MaintenanceStatus.DUE,
   MaintenanceStatus.IN_PROGRESS,
+  MaintenanceStatus.DONE,
   MaintenanceStatus.OVERDUE,
 ]);
+
+export interface AnalyticsDataHealthResponse {
+  state: 'current' | 'stale' | 'unavailable';
+  reason?: string;
+  generatedAt: string | null;
+  sourceMaxUpdatedAt: string | null;
+  ageSeconds: number | null;
+  maxAgeMinutes: number;
+  sourceCoverage: {
+    state: 'verified' | 'mismatch' | 'unavailable';
+    vehicles: { source: number | null; mart: number | null };
+    schedules: { source: number | null; mart: number | null };
+    statusesMatch: boolean | null;
+    maintenanceCostMatches: boolean | null;
+  };
+  semanticIndex: {
+    state: 'verified' | 'empty' | 'incomplete' | 'unavailable';
+    eligibleRecords: number | null;
+    indexedRecords: number | null;
+    coveragePercentage: number | null;
+    unmatchedRecords: number | null;
+  };
+}
 
 function round(value: number, decimals = 2): number {
   const factor = 10 ** decimals;
   return Math.round((value + Number.EPSILON) * factor) / factor;
+}
+
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function numericValue(value: unknown): number {
@@ -131,7 +162,7 @@ function scheduleLaborCost(schedule: {
 }
 
 /** Derive maintenance cost from dedicated scalar columns or workOrderProgress JSON (totalCost preferred). */
-function scheduleTotalCost(schedule: {
+export function scheduleTotalCost(schedule: {
   totalCost: unknown;
   partsCost: unknown;
   laborCost: unknown;
@@ -307,6 +338,305 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async getDataHealth(): Promise<AnalyticsDataHealthResponse> {
+    const maxAgeMinutes = positiveNumber(
+      process.env['ANALYTICS_MAX_AGE_MINUTES'],
+      1440,
+    );
+    const unavailable = (
+      reason: string,
+      sourceCoverage: AnalyticsDataHealthResponse['sourceCoverage'] = {
+        state: 'unavailable',
+        vehicles: { source: null, mart: null },
+        schedules: { source: null, mart: null },
+        statusesMatch: null,
+        maintenanceCostMatches: null,
+      },
+      semanticIndex: AnalyticsDataHealthResponse['semanticIndex'] = {
+        state: 'unavailable',
+        eligibleRecords: null,
+        indexedRecords: null,
+        coveragePercentage: null,
+        unmatchedRecords: null,
+      },
+    ): AnalyticsDataHealthResponse => ({
+      state: 'unavailable',
+      reason,
+      generatedAt: null,
+      sourceMaxUpdatedAt: null,
+      ageSeconds: null,
+      maxAgeMinutes,
+      sourceCoverage,
+      semanticIndex,
+    });
+
+    if (!this.prisma || !(await this.checkDatabase())) {
+      return unavailable('source_database_unavailable');
+    }
+
+    try {
+      const [
+        sourceVehicleCount,
+        sourceSchedules,
+        martVehicleRows,
+        martScheduleRows,
+        martStatusRows,
+        snapshotRows,
+      ] = await Promise.all([
+        this.prisma.vehicle.count({ where: { deletedAt: null } }),
+        this.prisma.maintenanceSchedule.findMany({
+          where: { deletedAt: null },
+          select: {
+            status: true,
+            totalCost: true,
+            partsCost: true,
+            laborCost: true,
+            workOrderProgress: true,
+          },
+        }),
+        this.dataMartService.query(
+          'SELECT COUNT(*) AS count FROM vehicle_summary',
+        ),
+        this.dataMartService.query(
+          'SELECT COUNT(*) AS count FROM maintenance_schedule_summary',
+        ),
+        this.dataMartService.query(
+          'SELECT status, scheduleCount FROM maintenance_status_summary',
+        ),
+        this.dataMartService.query(
+          `SELECT CAST(generatedAt AS VARCHAR) AS generatedAt,
+                  CAST(sourceMaxUpdatedAt AS VARCHAR) AS sourceMaxUpdatedAt,
+                  totalVehicles, totalSchedules, totalMaintenanceCost,
+                  completionRate, fleetPerformance
+           FROM analytics_snapshot WHERE snapshotKey = 'current'`,
+        ),
+      ]);
+
+      const sourceScheduleCount = sourceSchedules.length;
+      const martVehicleCount = Number(martVehicleRows[0]?.['count'] ?? 0);
+      const martScheduleCount = Number(martScheduleRows[0]?.['count'] ?? 0);
+      const sourceStatuses = new Map<string, number>();
+      for (const schedule of sourceSchedules) {
+        sourceStatuses.set(
+          schedule.status,
+          (sourceStatuses.get(schedule.status) ?? 0) + 1,
+        );
+      }
+      const martStatuses = new Map(
+        martStatusRows.map((row) => [
+          String(row['status']),
+          Number(row['scheduleCount']),
+        ]),
+      );
+      const statusesMatch = [
+        ...new Set([...sourceStatuses.keys(), ...martStatuses.keys()]),
+      ].every(
+        (status) =>
+          (sourceStatuses.get(status as MaintenanceStatus) ?? 0) ===
+          (martStatuses.get(status) ?? 0),
+      );
+      const sourceMaintenanceCost = round(
+        sourceSchedules.reduce(
+          (total, schedule) =>
+            total + round(scheduleTotalCost(schedule)),
+          0,
+        ),
+      );
+      const snapshot = snapshotRows[0];
+      const snapshotCountsMatch =
+        snapshot !== undefined &&
+        Number(snapshot['totalVehicles']) === sourceVehicleCount &&
+        Number(snapshot['totalSchedules']) === sourceScheduleCount;
+      const maintenanceCostMatches =
+        snapshot !== undefined &&
+        Math.abs(
+          Number(snapshot['totalMaintenanceCost']) - sourceMaintenanceCost,
+        ) < 0.01;
+      const sourceCoverage: AnalyticsDataHealthResponse['sourceCoverage'] = {
+        state:
+          sourceVehicleCount === martVehicleCount &&
+          sourceScheduleCount === martScheduleCount &&
+          statusesMatch &&
+          snapshotCountsMatch &&
+          maintenanceCostMatches
+            ? 'verified'
+            : 'mismatch',
+        vehicles: { source: sourceVehicleCount, mart: martVehicleCount },
+        schedules: {
+          source: sourceScheduleCount,
+          mart: martScheduleCount,
+        },
+        statusesMatch,
+        maintenanceCostMatches,
+      };
+
+      if (!snapshot) {
+        return unavailable('snapshot_missing', sourceCoverage);
+      }
+
+      const generatedAt = String(snapshot['generatedAt'] ?? '');
+      const generatedTime = Date.parse(generatedAt);
+      const sourceMaxUpdatedAt =
+        snapshot['sourceMaxUpdatedAt'] == null
+          ? null
+          : String(snapshot['sourceMaxUpdatedAt']);
+      const sourceTime = sourceMaxUpdatedAt
+        ? Date.parse(sourceMaxUpdatedAt)
+        : null;
+      const snapshotMetrics = [
+        snapshot['totalVehicles'],
+        snapshot['totalSchedules'],
+        snapshot['totalMaintenanceCost'],
+        snapshot['completionRate'],
+        snapshot['fleetPerformance'],
+      ].map(Number);
+      if (
+        !Number.isFinite(generatedTime) ||
+        generatedTime > Date.now() + 60_000 ||
+        (sourceMaxUpdatedAt !== null &&
+          (!Number.isFinite(sourceTime) ||
+            Number(sourceTime) > Date.now() + 60_000)) ||
+        (sourceScheduleCount + sourceVehicleCount > 0 &&
+          sourceMaxUpdatedAt === null) ||
+        snapshotMetrics.some(
+          (value) => !Number.isFinite(value) || value < 0,
+        ) ||
+        snapshotMetrics[3] > 100 ||
+        snapshotMetrics[4] > 100
+      ) {
+        return unavailable('snapshot_invalid', sourceCoverage);
+      }
+
+      const semanticIndex = await this.getSemanticIndexCoverage();
+      if (sourceCoverage.state !== 'verified') {
+        return unavailable(
+          'source_mart_mismatch',
+          sourceCoverage,
+          semanticIndex,
+        );
+      }
+
+      const ageSeconds = Math.max(
+        0,
+        Math.floor((Date.now() - generatedTime) / 1000),
+      );
+      return {
+        state: ageSeconds > maxAgeMinutes * 60 ? 'stale' : 'current',
+        generatedAt,
+        sourceMaxUpdatedAt,
+        ageSeconds,
+        maxAgeMinutes,
+        sourceCoverage,
+        semanticIndex,
+      };
+    } catch {
+      this.logger.warn('Analytics data-health validation failed.');
+      return unavailable('validation_failed');
+    }
+  }
+
+  private async getSemanticIndexCoverage(): Promise<
+    AnalyticsDataHealthResponse['semanticIndex']
+  > {
+    try {
+      const [schedules, templates, embeddings] = await Promise.all([
+        this.prisma!.maintenanceSchedule.findMany({
+          where: { deletedAt: null },
+          select: { id: true },
+        }),
+        this.prisma!.checklistTemplate.findMany({
+          where: { deletedAt: null },
+          select: {
+            id: true,
+            type: true,
+            items: {
+              where: { deletedAt: null },
+              select: { text: true },
+            },
+          },
+        }),
+        this.prisma!.$queryRaw<
+          Array<{
+            scheduleId: string | null;
+            templateId: string | null;
+            sourceType: string;
+          }>
+        >`
+          SELECT "scheduleId", "templateId", "sourceType"
+          FROM "maintenance_embeddings"
+        `,
+      ]);
+
+      const eligibleSources = new Set([
+        ...schedules.map((schedule) => `MAINTENANCE_SCHEDULE:${schedule.id}`),
+        ...templates
+          .filter((template) =>
+            [template.type, ...template.items.map((item) => item.text)].some(
+              (text) => text.trim(),
+            ),
+          )
+          .map((template) => `CHECKLIST_TEMPLATE:${template.id}`),
+      ]);
+      const indexedSources = embeddings.map((embedding) => {
+        if (
+          embedding.sourceType === 'MAINTENANCE_SCHEDULE' &&
+          embedding.scheduleId
+        ) {
+          return `MAINTENANCE_SCHEDULE:${embedding.scheduleId}`;
+        }
+        if (
+          embedding.sourceType === 'CHECKLIST_TEMPLATE' &&
+          embedding.templateId
+        ) {
+          return `CHECKLIST_TEMPLATE:${embedding.templateId}`;
+        }
+        return `INVALID:${embedding.sourceType}`;
+      });
+      const indexedSet = new Set(indexedSources);
+      const unmatchedRecords = [...eligibleSources].filter(
+        (source) => !indexedSet.has(source),
+      ).length;
+      const extraRecords = [...indexedSet].filter(
+        (source) => !eligibleSources.has(source),
+      ).length;
+      const duplicates = indexedSources.length - indexedSet.size;
+      const exact =
+        unmatchedRecords === 0 && extraRecords === 0 && duplicates === 0;
+      const eligibleRecords = eligibleSources.size;
+      const coveragePercentage =
+        eligibleRecords === 0
+          ? exact
+            ? 100
+            : 0
+          : round(
+              ((eligibleRecords - unmatchedRecords) / eligibleRecords) * 100,
+              1,
+            );
+
+      return {
+        state:
+          eligibleRecords === 0 && exact
+            ? 'empty'
+            : exact
+              ? 'verified'
+              : 'incomplete',
+        eligibleRecords,
+        indexedRecords: embeddings.length,
+        coveragePercentage,
+        unmatchedRecords: unmatchedRecords + extraRecords + duplicates,
+      };
+    } catch {
+      this.logger.warn('Semantic embedding coverage is unavailable.');
+      return {
+        state: 'unavailable',
+        eligibleRecords: null,
+        indexedRecords: null,
+        coveragePercentage: null,
+        unmatchedRecords: null,
+      };
+    }
+  }
+
   async syncNow(): Promise<{ success: boolean; message: string }> {
     if (this.isSyncing) {
       return { success: true, message: 'Sync already in progress.' };
@@ -351,6 +681,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
               status: true,
               odometerReading: true,
               startReferenceDate: true,
+              targetDueDate: true,
               createdAt: true,
               updatedAt: true,
               partsCost: true,
@@ -412,7 +743,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
             schedule.id,
             analyticsStatus(
               schedule.status,
-              schedule.startReferenceDate,
+              schedule.targetDueDate,
               generatedAt,
             ),
           ]),
@@ -430,7 +761,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
             assignedMechanic: schedule.assignedMechanic ?? '',
             scheduleStatus: scheduleStatusMap.get(schedule.id) ?? schedule.status,
             odometerReading: schedule.odometerReading,
-            nextDueDate: schedule.startReferenceDate,
+            nextDueDate: schedule.targetDueDate,
             partsCost: round(schedulePartsCost(schedule)),
             laborCost: round(scheduleLaborCost(schedule)),
             totalCost: round(scheduleTotalCost(schedule)),
@@ -448,15 +779,15 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
 
         const isDueWithin7Days = (schedule: ScheduleRecord) => {
           const status = scheduleStatusMap.get(schedule.id)!;
-          const dueDate = schedule.startReferenceDate;
+          const dueDate = schedule.targetDueDate;
           return (
-            status === MaintenanceStatus.DUE ||
-            (status !== MaintenanceStatus.COMPLETED &&
-              status !== MaintenanceStatus.CANCELLED &&
-              status !== MaintenanceStatus.OVERDUE &&
-              dueDate !== null &&
-              dueDate.getTime() >= startOfToday.getTime() &&
-              dueDate.getTime() <= dueSoonCutoff.getTime())
+            status !== MaintenanceStatus.DONE &&
+            status !== MaintenanceStatus.COMPLETED &&
+            status !== MaintenanceStatus.CANCELLED &&
+            status !== MaintenanceStatus.OVERDUE &&
+            dueDate !== null &&
+            dueDate.getTime() >= startOfToday.getTime() &&
+            dueDate.getTime() <= dueSoonCutoff.getTime()
           );
         };
 
@@ -546,11 +877,12 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
               .filter((schedule) => {
                 const status = scheduleStatusMap.get(schedule.id)!;
                 return (
+                  status !== MaintenanceStatus.DONE &&
                   status !== MaintenanceStatus.COMPLETED &&
                   status !== MaintenanceStatus.CANCELLED
                 );
               })
-              .map((schedule) => schedule.startReferenceDate)
+              .map((schedule) => schedule.targetDueDate)
               .filter((date): date is Date => date !== null)
               .sort((left, right) => left.getTime() - right.getTime());
             const riskLevel: VehicleMaintenanceKpiRow['riskLevel'] =
@@ -593,7 +925,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         const alerts: MaintenanceAlertRow[] = schedules.flatMap(
           (schedule): MaintenanceAlertRow[] => {
             const status = scheduleStatusMap.get(schedule.id)!;
-            const dueDate = schedule.startReferenceDate;
+            const dueDate = schedule.targetDueDate;
             if (status === MaintenanceStatus.OVERDUE) {
               return [
                 {
@@ -650,10 +982,15 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
           (total, cost) => total + cost,
           0,
         );
+        const sourceRevision = createAnalyticsSourceRevision(
+          vehicles,
+          schedules,
+        );
 
         const preparedAnalytics: PreparedAnalyticsRows = {
           snapshot: {
             snapshotKey: 'current',
+            sourceRevision,
             generatedAt,
             sourceMaxUpdatedAt: sourceUpdatedDates.length
               ? new Date(
@@ -706,9 +1043,27 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
           alerts,
         };
 
-        await replaceVehicleSummary(duckdb, vehicleRows);
-        await replaceMaintenanceScheduleSummary(duckdb, scheduleRows);
-        await replacePreparedAnalytics(duckdb, preparedAnalytics);
+        await duckdb.run('BEGIN TRANSACTION');
+        let transactionStarted = true;
+        try {
+          await replaceVehicleSummary(duckdb, vehicleRows);
+          await replaceMaintenanceScheduleSummary(duckdb, scheduleRows);
+          await replacePreparedAnalytics(duckdb, preparedAnalytics);
+          await duckdb.run('COMMIT');
+          transactionStarted = false;
+        } catch (error) {
+          if (transactionStarted) {
+            try {
+              await duckdb.run('ROLLBACK');
+            } catch (rollbackError) {
+              this.logger.error(
+                'DuckDB sync rollback failed.',
+                rollbackError,
+              );
+            }
+          }
+          throw error;
+        }
 
         // Reset cached DuckDB connection in AnalyticsService
         this.analyticsService.resetConnection();
@@ -716,6 +1071,35 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         const durationMs = Date.now() - startTime;
         const msg = `Synced ${vehicles.length} vehicles and ${schedules.length} schedules to DuckDB in ${durationMs}ms.`;
         this.logger.log(msg);
+        try {
+          const health = await this.getDataHealth();
+          if (health.state === 'current') {
+            await this.analyticsService.enqueueAiInsight(
+              preparedAnalytics.snapshot.sourceRevision,
+            );
+          } else {
+            this.logger.warn(
+              'AI insight generation is waiting for current analytics data.',
+            );
+          }
+          void this.analyticsService
+            .processAiInsightQueue(health.state === 'current')
+            .catch((error: unknown) => {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              this.logger.error(
+                `AI insight queue processing failed without affecting analytics sync: ${message}`,
+                error,
+              );
+            });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.logger.error(
+            `AI insight queue scheduling failed without affecting analytics sync: ${message}`,
+            error,
+          );
+        }
         return { success: true, message: msg };
     } catch (error) {
       const errMessage = error instanceof Error ? error.message : String(error);

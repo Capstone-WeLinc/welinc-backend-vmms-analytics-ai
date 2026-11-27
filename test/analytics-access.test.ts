@@ -55,7 +55,11 @@ for (const name of ['getWorkOrderById', 'getWorkOrderRecommendations', 'getSched
     } } },
     { provide: APP_GUARD, useClass: AnalyticsAccessGuard },
     { provide: APP_INTERCEPTOR, useClass: AnalyticsResponseInterceptor },
-    { provide: SyncService, useValue: { checkDatabase: async () => true, syncNow: () => { businessCalls++; return { synced: true }; } } },
+    { provide: SyncService, useValue: {
+      checkDatabase: async () => true,
+      getDataHealth: async () => ({ state: 'current' }),
+      syncNow: () => { businessCalls++; return { synced: true }; },
+    } },
   ],
 })
 class TestAppModule {}
@@ -123,7 +127,7 @@ test('analytics HTTP authorization and response boundaries', async (t) => {
       assert.equal(coreCalls, 0);
     });
     const fleetPaths = ['overview', 'vehicles', 'insights', 'alerts', 'report', 'workorders',
-      'workorders/mechanics', 'workorders/ai-insights', 'workorders/list?mechanic=MECHANIC'];
+      'data-health', 'workorders/mechanics', 'workorders/ai-insights', 'workorders/list?mechanic=MECHANIC'];
     await t.test('every fleet endpoint and legacy alias rejects mobile roles and permits management', async () => {
       for (const prefix of ['/analytics/', '/analytics/analytics/']) {
         for (const path of fleetPaths) {

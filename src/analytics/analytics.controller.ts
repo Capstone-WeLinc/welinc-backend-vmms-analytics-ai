@@ -1,5 +1,8 @@
 import { Body, Controller, Get, Param, Post, Query, ServiceUnavailableException } from '@nestjs/common';
-import { AnalyticsService } from './analytics.service';
+import {
+  AnalyticsService,
+  type AnalyticsInsightJobStatusResponse,
+} from './analytics.service';
 import { SyncService } from './sync.service';
 import { AnalyticsAccess } from '../auth/analytics-access';
 
@@ -23,6 +26,11 @@ export class AnalyticsController {
       throw new ServiceUnavailableException({ status: 'unavailable', service: 'welinc-backend-vmms-analytics-ai', database: 'failed' });
     }
     return { status: 'ok', service: 'welinc-backend-vmms-analytics-ai', database: 'ok', mode: 'microservice', port: process.env['PORT'] ?? 3001 };
+  }
+
+  @Get(['data-health', 'analytics/data-health'])
+  getDataHealth() {
+    return this.syncService.getDataHealth();
   }
 
   @Get('overview')
@@ -59,14 +67,22 @@ export class AnalyticsController {
 
   @Get('insights')
   async getAiInsights() {
-    const aiSummary = await this.analyticsService.getAiInsights();
-    return { aiSummary };
+    const dataHealth = await this.syncService.getDataHealth();
+    return this.analyticsService.getAiInsights(dataHealth.state === 'current');
   }
 
   @Get('analytics/insights')
   async getAiInsightsLegacy() {
-    const aiSummary = await this.analyticsService.getAiInsights();
-    return { aiSummary };
+    const dataHealth = await this.syncService.getDataHealth();
+    return this.analyticsService.getAiInsights(dataHealth.state === 'current');
+  }
+
+  @Get(['insights/status', 'analytics/insights/status'])
+  async getAiInsightJobStatus(): Promise<AnalyticsInsightJobStatusResponse> {
+    const dataHealth = await this.syncService.getDataHealth();
+    return this.analyticsService.getAiInsightJobStatus(
+      dataHealth.state === 'current',
+    );
   }
 
   @Get('alerts')

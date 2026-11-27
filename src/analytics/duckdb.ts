@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -40,6 +41,7 @@ export interface MaintenanceScheduleSummaryRow {
 
 export interface AnalyticsSnapshotRow {
   snapshotKey: 'current';
+  sourceRevision: string;
   generatedAt: Date;
   sourceMaxUpdatedAt: Date | null;
   totalVehicles: number;
@@ -59,6 +61,28 @@ export interface AnalyticsSnapshotRow {
   totalMaintenanceCost: number;
   completionRate: number;
   fleetPerformance: number;
+}
+
+export function createAnalyticsSourceRevision(
+  vehicles: readonly { id: string; updatedAt: Date }[],
+  schedules: readonly { id: string; updatedAt: Date }[],
+): string {
+  return createHash('sha256')
+    .update(
+      [
+        ...vehicles.map(
+          (vehicle) =>
+            `vehicle:${vehicle.id}:${vehicle.updatedAt.toISOString()}`,
+        ),
+        ...schedules.map(
+          (schedule) =>
+            `schedule:${schedule.id}:${schedule.updatedAt.toISOString()}`,
+        ),
+      ]
+        .sort()
+        .join('\n'),
+    )
+    .digest('hex');
 }
 
 export interface MaintenanceStatusSummaryRow {
@@ -157,6 +181,7 @@ export async function initializeDataMart(
 
     CREATE TABLE IF NOT EXISTS analytics_snapshot (
       snapshotKey VARCHAR PRIMARY KEY,
+      sourceRevision VARCHAR NOT NULL,
       generatedAt TIMESTAMPTZ NOT NULL,
       sourceMaxUpdatedAt TIMESTAMPTZ,
       totalVehicles INTEGER NOT NULL,
@@ -176,6 +201,35 @@ export async function initializeDataMart(
       totalMaintenanceCost DOUBLE NOT NULL,
       completionRate DOUBLE NOT NULL,
       fleetPerformance DOUBLE NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_ai_insight_cache (
+      cacheKey VARCHAR PRIMARY KEY,
+      sourceRevision VARCHAR NOT NULL,
+      responseJson VARCHAR NOT NULL,
+      generatedAt TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_ai_insight_attempts (
+      cacheKey VARCHAR PRIMARY KEY,
+      sourceRevision VARCHAR NOT NULL,
+      attemptedAt TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_ai_insight_attempt_history (
+      sourceRevision VARCHAR PRIMARY KEY,
+      attemptedAt TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics_ai_insight_jobs (
+      jobKey VARCHAR PRIMARY KEY,
+      sourceRevision VARCHAR NOT NULL,
+      status VARCHAR NOT NULL,
+      queuedAt TIMESTAMPTZ NOT NULL,
+      runAfter TIMESTAMPTZ NOT NULL,
+      startedAt TIMESTAMPTZ,
+      finishedAt TIMESTAMPTZ,
+      errorMessage VARCHAR
     );
 
     CREATE TABLE IF NOT EXISTS maintenance_status_summary (
@@ -228,10 +282,16 @@ export async function initializeDataMart(
   // ── Schema migrations: add new columns to existing tables ──────────────────
   // ALTER TABLE ... ADD COLUMN IF NOT EXISTS is idempotent — safe on every startup.
   await connection.run(`
+    ALTER TABLE analytics_snapshot ADD COLUMN IF NOT EXISTS sourceRevision VARCHAR;
     ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS partsCost DOUBLE DEFAULT 0;
     ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS laborCost DOUBLE DEFAULT 0;
     ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS totalCost DOUBLE DEFAULT 0;
     ALTER TABLE maintenance_schedule_summary ADD COLUMN IF NOT EXISTS createdAt TIMESTAMPTZ;
+
+    INSERT INTO analytics_ai_insight_attempt_history (sourceRevision, attemptedAt)
+    SELECT sourceRevision, attemptedAt
+    FROM analytics_ai_insight_attempts
+    ON CONFLICT (sourceRevision) DO NOTHING;
   `);
 }
 
@@ -355,6 +415,7 @@ export async function replacePreparedAnalytics(
     'analytics_snapshot',
     [
       'snapshotKey',
+      'sourceRevision',
       'generatedAt',
       'sourceMaxUpdatedAt',
       'totalVehicles',
@@ -378,6 +439,7 @@ export async function replacePreparedAnalytics(
     [rows.snapshot],
     (row) => [
       row.snapshotKey,
+      row.sourceRevision,
       row.generatedAt.toISOString(),
       row.sourceMaxUpdatedAt?.toISOString() ?? null,
       row.totalVehicles,
@@ -398,7 +460,7 @@ export async function replacePreparedAnalytics(
       row.completionRate,
       row.fleetPerformance,
     ],
-    new Set([1, 2]),
+    new Set([2, 3]),
   );
 
   await connection.run('DELETE FROM maintenance_status_summary');
