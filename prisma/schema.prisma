@@ -57,6 +57,7 @@ enum MaintenanceStatus {
   PENDING
   DUE
   IN_PROGRESS
+  DONE
   COMPLETED
   OVERDUE
   CANCELLED

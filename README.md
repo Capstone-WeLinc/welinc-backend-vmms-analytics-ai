@@ -38,6 +38,7 @@ Run `npm run test:auth` for HTTP authorization tests using a local stub core API
 the tests require no database, SMS delivery, or AI provider.
 
 - GET /analytics/health
+- GET /analytics/data-health
 - GET /analytics/overview
 - GET /analytics/vehicles
 - GET /analytics/alerts

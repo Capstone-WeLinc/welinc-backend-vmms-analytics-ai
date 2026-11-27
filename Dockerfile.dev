@@ -10,8 +10,5 @@ RUN npm config set fetch-retries 5 && \
 # Copy source
 COPY . .
 
-# Generate Prisma client
-RUN DATABASE_URL=postgresql://build:build@localhost:5432/build?schema=public npx prisma generate
-
 EXPOSE 3011
 CMD ["npm", "run", "start:dev"]

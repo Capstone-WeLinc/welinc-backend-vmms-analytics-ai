@@ -2,11 +2,7 @@ import { HttpException, HttpStatus, Injectable, ServiceUnavailableException } fr
 
 @Injectable()
 export class GeminiAiService {
-  /** AI insights cache to minimize Gemini API calls (free-tier quota is very limited) */
-  private aiInsightsCache: { text: string; timestamp: number } | null = null;
   private readonly AI_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-  /** Shared in-flight promise — concurrent callers await the same Gemini call */
-  private aiInsightsBuildPromise: Promise<string> | null = null;
 
   /** Work order AI insights cache */
   private workOrderAiCache: { text: string; timestamp: number } | null = null;
@@ -311,38 +307,6 @@ export class GeminiAiService {
     }
 
     return null;
-  }
-
-  async getAiInsights(builder: () => Promise<string>): Promise<string> {
-    const isFresh =
-      this.aiInsightsCache &&
-      Date.now() - this.aiInsightsCache.timestamp < this.AI_CACHE_TTL_MS;
-
-    if (isFresh) {
-      return this.aiInsightsCache!.text;
-    }
-
-    if (this.aiInsightsCache) {
-      if (!this.aiInsightsBuildPromise) {
-        this.aiInsightsBuildPromise = builder().then((text) => {
-          this.aiInsightsCache = { text, timestamp: Date.now() };
-          return text;
-        }).finally(() => {
-          this.aiInsightsBuildPromise = null;
-        });
-      }
-      return this.aiInsightsCache.text;
-    }
-
-    if (!this.aiInsightsBuildPromise) {
-      this.aiInsightsBuildPromise = builder().then((text) => {
-        this.aiInsightsCache = { text, timestamp: Date.now() };
-        return text;
-      }).finally(() => {
-        this.aiInsightsBuildPromise = null;
-      });
-    }
-    return this.aiInsightsBuildPromise;
   }
 
   async getWorkOrderAiInsights(builder: () => Promise<string>): Promise<string> {

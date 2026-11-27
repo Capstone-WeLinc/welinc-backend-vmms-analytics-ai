@@ -38,6 +38,7 @@ const STATUS_ORDER = [
   MaintenanceStatus.PENDING,
   MaintenanceStatus.DUE,
   MaintenanceStatus.IN_PROGRESS,
+  MaintenanceStatus.DONE,
   MaintenanceStatus.COMPLETED,
   MaintenanceStatus.OVERDUE,
   MaintenanceStatus.CANCELLED,
@@ -46,6 +47,7 @@ const STATUS_ORDER = [
 const ACTIVE_STATUSES = new Set<MaintenanceStatus>([
   MaintenanceStatus.DUE,
   MaintenanceStatus.IN_PROGRESS,
+  MaintenanceStatus.DONE,
   MaintenanceStatus.OVERDUE,
 ]);
 
@@ -335,6 +337,7 @@ async function main(): Promise<void> {
       const status = scheduleStatus.get(schedule.id)!;
       const dueDate = schedule.startReferenceDate;
       return (
+        status !== MaintenanceStatus.DONE &&
         status !== MaintenanceStatus.COMPLETED &&
         status !== MaintenanceStatus.CANCELLED &&
         dueDate !== null &&
@@ -420,6 +423,7 @@ async function main(): Promise<void> {
         .filter((schedule) => {
           const status = scheduleStatus.get(schedule.id)!;
           return (
+            status !== MaintenanceStatus.DONE &&
             status !== MaintenanceStatus.COMPLETED &&
             status !== MaintenanceStatus.CANCELLED
           );

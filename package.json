@@ -8,12 +8,15 @@
     "node": "24.x"
   },
   "scripts": {
+    "generate:client": "node scripts/generate-prisma-client.cjs",
+    "prebuild": "npm run generate:client",
     "test:auth": "node --test -r ts-node/register/transpile-only test/analytics-access.test.ts",
     "test:env": "node --test -r ts-node/register/transpile-only test/env-validation.test.ts",
     "build": "nest build --webpack false",
     "validate": "node -r ts-node/register/transpile-only ./scripts/validate.ts",
     "studio": "node -r ts-node/register/transpile-only ./scripts/duckdb-studio.ts",
     "start": "nest start",
+    "prestart:dev": "npm run generate:client",
     "start:dev": "nest start --watch",
     "migrate": "node -r ts-node/register/transpile-only ./scripts/migrate.ts",
     "migrate:seed": "node -r ts-node/register/transpile-only ./scripts/migrate-analytics.ts",

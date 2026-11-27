@@ -160,12 +160,8 @@ export async function replaceEmbeddings(
 }
 
 export async function embeddingCount(prisma: PrismaClient): Promise<number> {
-  try {
-    const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
-      SELECT COUNT(*)::bigint AS count FROM "maintenance_embeddings"
-    `;
-    return Number(rows[0]?.count ?? 0);
-  } catch {
-    return 0;
-  }
+  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
+    SELECT COUNT(*)::bigint AS count FROM "maintenance_embeddings"
+  `;
+  return Number(rows[0]?.count ?? 0);
 }

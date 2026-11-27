@@ -25,6 +25,11 @@ export class AnalyticsController {
     return { status: 'ok', service: 'welinc-backend-vmms-analytics-ai', database: 'ok', mode: 'microservice', port: process.env['PORT'] ?? 3001 };
   }
 
+  @Get(['data-health', 'analytics/data-health'])
+  getDataHealth() {
+    return this.syncService.getDataHealth();
+  }
+
   @Get('overview')
   async getOverview() {
     const [overview, forecast, anomalies, trends] = await Promise.all([
@@ -59,14 +64,14 @@ export class AnalyticsController {
 
   @Get('insights')
   async getAiInsights() {
-    const aiSummary = await this.analyticsService.getAiInsights();
-    return { aiSummary };
+    const dataHealth = await this.syncService.getDataHealth();
+    return this.analyticsService.getAiInsights(dataHealth.state === 'current');
   }
 
   @Get('analytics/insights')
   async getAiInsightsLegacy() {
-    const aiSummary = await this.analyticsService.getAiInsights();
-    return { aiSummary };
+    const dataHealth = await this.syncService.getDataHealth();
+    return this.analyticsService.getAiInsights(dataHealth.state === 'current');
   }
 
   @Get('alerts')
