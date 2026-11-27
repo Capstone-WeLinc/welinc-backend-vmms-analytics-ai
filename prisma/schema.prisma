@@ -38,6 +38,7 @@ model MaintenanceSchedule {
   startingReferenceReadingKm Int?              @map("starting_reference_reading_km")
   intervalType               String?           @map("interval_type")
   startReferenceDate         DateTime?         @map("start_reference_date")
+  targetDueDate              DateTime?         @map("target_due_date") @db.Date
   previousScheduleId         String?           @db.Uuid @map("previous_schedule_id")
   workOrderProgress          Json?             @map("work_order_progress")
   partsCost                  Decimal?          @map("parts_cost") @db.Decimal(10, 2)

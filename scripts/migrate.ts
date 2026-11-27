@@ -16,6 +16,7 @@ import {
   replaceVehicleSummary,
   VehicleMaintenanceKpiRow,
   VehicleSummaryRow,
+  createAnalyticsSourceRevision,
 } from './duckdb';
 import {
   EmbeddingSource,
@@ -516,9 +517,14 @@ async function main(): Promise<void> {
       ...vehicles.map((vehicle) => vehicle.updatedAt),
       ...schedules.map((schedule) => schedule.updatedAt),
     ];
+    const sourceRevision = createAnalyticsSourceRevision(
+      vehicles,
+      schedules,
+    );
     const preparedAnalytics: PreparedAnalyticsRows = {
       snapshot: {
         snapshotKey: 'current',
+        sourceRevision,
         generatedAt,
         sourceMaxUpdatedAt: sourceUpdatedDates.length
           ? new Date(

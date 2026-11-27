@@ -20,6 +20,7 @@ import {
   replaceVehicleSummary,
   VehicleMaintenanceKpiRow,
   VehicleSummaryRow,
+  createAnalyticsSourceRevision,
 } from './duckdb';
 import { AnalyticsService } from './analytics.service';
 import { DuckDbDataMartService } from './duckdb-datamart.service';
@@ -680,6 +681,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
               status: true,
               odometerReading: true,
               startReferenceDate: true,
+              targetDueDate: true,
               createdAt: true,
               updatedAt: true,
               partsCost: true,
@@ -741,7 +743,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
             schedule.id,
             analyticsStatus(
               schedule.status,
-              schedule.startReferenceDate,
+              schedule.targetDueDate,
               generatedAt,
             ),
           ]),
@@ -759,7 +761,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
             assignedMechanic: schedule.assignedMechanic ?? '',
             scheduleStatus: scheduleStatusMap.get(schedule.id) ?? schedule.status,
             odometerReading: schedule.odometerReading,
-            nextDueDate: schedule.startReferenceDate,
+            nextDueDate: schedule.targetDueDate,
             partsCost: round(schedulePartsCost(schedule)),
             laborCost: round(scheduleLaborCost(schedule)),
             totalCost: round(scheduleTotalCost(schedule)),
@@ -777,16 +779,15 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
 
         const isDueWithin7Days = (schedule: ScheduleRecord) => {
           const status = scheduleStatusMap.get(schedule.id)!;
-          const dueDate = schedule.startReferenceDate;
+          const dueDate = schedule.targetDueDate;
           return (
-            status === MaintenanceStatus.DUE ||
-            (status !== MaintenanceStatus.DONE &&
-              status !== MaintenanceStatus.COMPLETED &&
-              status !== MaintenanceStatus.CANCELLED &&
-              status !== MaintenanceStatus.OVERDUE &&
-              dueDate !== null &&
-              dueDate.getTime() >= startOfToday.getTime() &&
-              dueDate.getTime() <= dueSoonCutoff.getTime())
+            status !== MaintenanceStatus.DONE &&
+            status !== MaintenanceStatus.COMPLETED &&
+            status !== MaintenanceStatus.CANCELLED &&
+            status !== MaintenanceStatus.OVERDUE &&
+            dueDate !== null &&
+            dueDate.getTime() >= startOfToday.getTime() &&
+            dueDate.getTime() <= dueSoonCutoff.getTime()
           );
         };
 
@@ -881,7 +882,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
                   status !== MaintenanceStatus.CANCELLED
                 );
               })
-              .map((schedule) => schedule.startReferenceDate)
+              .map((schedule) => schedule.targetDueDate)
               .filter((date): date is Date => date !== null)
               .sort((left, right) => left.getTime() - right.getTime());
             const riskLevel: VehicleMaintenanceKpiRow['riskLevel'] =
@@ -924,7 +925,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         const alerts: MaintenanceAlertRow[] = schedules.flatMap(
           (schedule): MaintenanceAlertRow[] => {
             const status = scheduleStatusMap.get(schedule.id)!;
-            const dueDate = schedule.startReferenceDate;
+            const dueDate = schedule.targetDueDate;
             if (status === MaintenanceStatus.OVERDUE) {
               return [
                 {
@@ -981,10 +982,15 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
           (total, cost) => total + cost,
           0,
         );
+        const sourceRevision = createAnalyticsSourceRevision(
+          vehicles,
+          schedules,
+        );
 
         const preparedAnalytics: PreparedAnalyticsRows = {
           snapshot: {
             snapshotKey: 'current',
+            sourceRevision,
             generatedAt,
             sourceMaxUpdatedAt: sourceUpdatedDates.length
               ? new Date(
@@ -1065,6 +1071,35 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         const durationMs = Date.now() - startTime;
         const msg = `Synced ${vehicles.length} vehicles and ${schedules.length} schedules to DuckDB in ${durationMs}ms.`;
         this.logger.log(msg);
+        try {
+          const health = await this.getDataHealth();
+          if (health.state === 'current') {
+            await this.analyticsService.enqueueAiInsight(
+              preparedAnalytics.snapshot.sourceRevision,
+            );
+          } else {
+            this.logger.warn(
+              'AI insight generation is waiting for current analytics data.',
+            );
+          }
+          void this.analyticsService
+            .processAiInsightQueue(health.state === 'current')
+            .catch((error: unknown) => {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              this.logger.error(
+                `AI insight queue processing failed without affecting analytics sync: ${message}`,
+                error,
+              );
+            });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.logger.error(
+            `AI insight queue scheduling failed without affecting analytics sync: ${message}`,
+            error,
+          );
+        }
         return { success: true, message: msg };
     } catch (error) {
       const errMessage = error instanceof Error ? error.message : String(error);

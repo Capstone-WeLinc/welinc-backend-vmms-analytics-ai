@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { DuckDBConnection } from '@duckdb/node-api';
 import { DuckDbDataMartService } from './duckdb-datamart.service';
@@ -34,16 +35,50 @@ export interface AnalyticsInsightsResponse {
   };
 }
 
+interface StoredAnalyticsInsight {
+  sourceRevision: string;
+  response: AnalyticsInsightsResponse;
+}
+
+interface StoredAnalyticsInsightJob {
+  sourceRevision: string;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  queuedAt: string;
+  runAfter: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface AnalyticsInsightJobStatusResponse {
+  state:
+    | 'current'
+    | 'queued'
+    | 'generating'
+    | 'failed'
+    | 'waiting'
+    | 'blocked';
+  hasSavedInsight: boolean;
+  hasCurrentInsight: boolean;
+  queuedAt: string | null;
+  runAfter: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastGeneratedAt: string | null;
+}
+
+const AI_INSIGHT_DEBOUNCE_MS = 30_000;
+const AI_INSIGHT_FAILED_MESSAGE =
+  'AI report generation failed for this revision. It will not be retried until the source data changes.';
+const AI_INSIGHT_INTERRUPTED_MESSAGE =
+  'AI report generation was interrupted and will not be retried for this revision.';
+
 @Injectable()
 export class AnalyticsService implements OnModuleDestroy {
-  private readonly aiInsightsCacheTtlMs = 10 * 60 * 1000;
-  private aiInsightsCache: {
-    snapshotId: string;
-    timestamp: number;
-    response: AnalyticsInsightsResponse;
+  private aiInsightsBuildPromise: {
+    sourceRevision: string;
+    promise: Promise<AnalyticsInsightsResponse>;
   } | null = null;
-  private aiInsightsBuildPromise: Promise<AnalyticsInsightsResponse> | null =
-    null;
+  private isProcessingAiInsightJob = false;
 
   constructor(
     private readonly dataMartService: DuckDbDataMartService,
@@ -164,7 +199,7 @@ export class AnalyticsService implements OnModuleDestroy {
             v.latestMaintenanceDate
           FROM maintenance_schedule_summary s
           LEFT JOIN vehicle_maintenance_kpi v ON s.vehiclePlate = v.plateNumber
-          WHERE s.scheduleStatus NOT IN ('COMPLETED', 'CANCELLED')
+          WHERE s.scheduleStatus NOT IN ('COMPLETED', 'CANCELLED', 'OVERDUE')
         ),
         PredictedSchedules AS (
           SELECT 
@@ -181,7 +216,7 @@ export class AnalyticsService implements OnModuleDestroy {
           FROM EnrichedSchedules
         )
         SELECT 
-          CAST(COUNT(CASE WHEN estimatedDueDate <= current_date + INTERVAL 7 DAY THEN 1 END) AS INTEGER) as dueIn7Days,
+          CAST(COUNT(CASE WHEN estimatedDueDate >= current_date AND estimatedDueDate <= current_date + INTERVAL 7 DAY THEN 1 END) AS INTEGER) as dueIn7Days,
           CAST(COUNT(CASE WHEN estimatedDueDate > current_date + INTERVAL 7 DAY AND estimatedDueDate <= current_date + INTERVAL 30 DAY THEN 1 END) AS INTEGER) as dueIn30Days,
           CAST(COUNT(CASE WHEN estimatedDueDate > current_date + INTERVAL 30 DAY AND estimatedDueDate <= current_date + INTERVAL 90 DAY THEN 1 END) AS INTEGER) as dueIn90Days
         FROM PredictedSchedules`
@@ -275,26 +310,31 @@ export class AnalyticsService implements OnModuleDestroy {
   }
 
   async getAiInsights(
-    allowGeneration = true,
-  ): Promise<AnalyticsInsightsResponse> {
-    const cached = this.aiInsightsCache;
-    if (!allowGeneration) {
-      if (cached) {
-        return this.markInsightStale(
-          cached.response,
-          'Analytics data validation is stale or unavailable; showing the previous insight.',
-        );
-      }
-      throw new ServiceUnavailableException(
-        'AI insights cannot be generated until analytics data is current and validated.',
+    dataIsCurrent = true,
+  ): Promise<AnalyticsInsightsResponse | null> {
+    const cached = await this.readStoredAiInsight();
+    if (!cached) return null;
+    if (!dataIsCurrent) {
+      return this.markInsightStale(
+        cached.response,
+        'Analytics data validation is stale or unavailable; showing the previous insight.',
       );
     }
 
-    let overview: Awaited<ReturnType<AnalyticsService['getOverview']>>;
     try {
-      overview = await this.getOverview();
+      const overview = await this.getOverview();
+      if (
+        overview.dataSource.isStale ||
+        cached.sourceRevision !== this.insightSourceRevision(overview)
+      ) {
+        return this.markInsightStale(
+          cached.response,
+          'Analytics source data changed; this saved insight belongs to an earlier revision.',
+        );
+      }
+      return cached.response;
     } catch (error) {
-      if (cached) {
+      if (error instanceof ServiceUnavailableException) {
         return this.markInsightStale(
           cached.response,
           'The current analytics snapshot is unavailable; showing the previous insight.',
@@ -302,32 +342,40 @@ export class AnalyticsService implements OnModuleDestroy {
       }
       throw error;
     }
+  }
 
-    const snapshotId = [
-      overview.snapshot.snapshotKey,
-      overview.dataSource.generatedAt,
-      overview.dataSource.sourceMaxUpdatedAt ?? '',
-    ].join(':');
+  async generateAiInsights(): Promise<AnalyticsInsightsResponse> {
+    const overview = await this.getOverview();
     if (overview.dataSource.isStale) {
-      if (cached) {
-        return this.markInsightStale(
-          cached.response,
-          'The current analytics snapshot is stale; showing the previous insight.',
-        );
-      }
       throw new ServiceUnavailableException(
         'AI insights cannot be generated from stale analytics data.',
       );
     }
-    if (
-      cached?.snapshotId === snapshotId &&
-      Date.now() - cached.timestamp < this.aiInsightsCacheTtlMs
-    ) {
+
+    const sourceRevision = this.insightSourceRevision(overview);
+    const cached = await this.readStoredAiInsight();
+    if (cached?.sourceRevision === sourceRevision) {
       return cached.response;
     }
-    if (this.aiInsightsBuildPromise) {
-      return this.aiInsightsBuildPromise;
+    if (await this.hasAttemptedAiInsightRevision(sourceRevision)) {
+      if (cached) {
+        return this.markInsightStale(
+          cached.response,
+          'AI generation was already attempted for this source revision; the previous insight is retained.',
+        );
+      }
+      throw new ServiceUnavailableException(
+        'AI generation was already attempted for this source revision.',
+      );
     }
+    if (this.aiInsightsBuildPromise) {
+      if (this.aiInsightsBuildPromise.sourceRevision === sourceRevision) {
+        return this.aiInsightsBuildPromise.promise;
+      }
+      await this.aiInsightsBuildPromise.promise.catch(() => undefined);
+      return this.generateAiInsights();
+    }
+    await this.markAiInsightAttempted(sourceRevision);
 
     const buildPromise = (async (): Promise<AnalyticsInsightsResponse> => {
       const [alertsResult, vehicleKpis, forecast, anomalies, trends] =
@@ -429,28 +477,337 @@ Format:
       };
     })();
 
-    this.aiInsightsBuildPromise = buildPromise;
+    this.aiInsightsBuildPromise = { sourceRevision, promise: buildPromise };
     try {
       const response = await buildPromise;
-      this.aiInsightsCache = {
-        snapshotId,
-        timestamp: Date.now(),
-        response,
-      };
+      await this.storeAiInsight(sourceRevision, response);
       return response;
-    } catch (error) {
-      if (cached) {
-        return this.markInsightStale(
-          cached.response,
-          'AI refresh failed; showing the previous insight.',
-        );
-      }
-      throw error;
     } finally {
-      if (this.aiInsightsBuildPromise === buildPromise) {
+      if (this.aiInsightsBuildPromise?.promise === buildPromise) {
         this.aiInsightsBuildPromise = null;
       }
     }
+  }
+
+  async enqueueAiInsight(sourceRevision: string): Promise<void> {
+    const [cached, existingJob] = await Promise.all([
+      this.readStoredAiInsight(),
+      this.readStoredAiInsightJob(),
+    ]);
+    if (cached?.sourceRevision === sourceRevision) return;
+    if (existingJob?.sourceRevision === sourceRevision) return;
+
+    const queuedAt = new Date();
+    const runAfter = new Date(queuedAt.getTime() + AI_INSIGHT_DEBOUNCE_MS);
+    await this.withDataMart(async (connection) => {
+      await connection.run(
+        `INSERT INTO analytics_ai_insight_jobs
+           (jobKey, sourceRevision, status, queuedAt, runAfter,
+            startedAt, finishedAt, errorMessage)
+         VALUES ('latest', $1, 'PENDING', CAST($2 AS TIMESTAMPTZ),
+                 CAST($3 AS TIMESTAMPTZ), NULL, NULL, NULL)
+         ON CONFLICT (jobKey) DO UPDATE SET
+           sourceRevision = excluded.sourceRevision,
+           status = excluded.status,
+           queuedAt = excluded.queuedAt,
+           runAfter = excluded.runAfter,
+           startedAt = NULL,
+           finishedAt = NULL,
+           errorMessage = NULL`,
+        [sourceRevision, queuedAt.toISOString(), runAfter.toISOString()],
+      );
+    });
+  }
+
+  async processAiInsightQueue(dataIsCurrent: boolean): Promise<void> {
+    if (this.isProcessingAiInsightJob) return;
+    this.isProcessingAiInsightJob = true;
+
+    try {
+      const job = await this.readStoredAiInsightJob();
+      if (!job) return;
+
+      const cached = await this.readStoredAiInsight();
+      if (cached?.sourceRevision === job.sourceRevision) {
+        await this.updateAiInsightJob(job.sourceRevision, 'COMPLETED');
+        return;
+      }
+
+      if (job.status === 'RUNNING') {
+        await this.updateAiInsightJob(
+          job.sourceRevision,
+          'FAILED',
+          AI_INSIGHT_INTERRUPTED_MESSAGE,
+        );
+        return;
+      }
+      if (
+        job.status !== 'PENDING' ||
+        !dataIsCurrent ||
+        Date.parse(job.runAfter) > Date.now()
+      ) {
+        return;
+      }
+
+      const overview = await this.getOverview();
+      if (overview.dataSource.isStale) return;
+      const currentRevision = this.insightSourceRevision(overview);
+      if (currentRevision !== job.sourceRevision) {
+        await this.enqueueAiInsight(currentRevision);
+        return;
+      }
+
+      await this.updateAiInsightJob(job.sourceRevision, 'RUNNING');
+      const claimedJob = await this.readStoredAiInsightJob();
+      if (
+        claimedJob?.sourceRevision !== job.sourceRevision ||
+        claimedJob.status !== 'RUNNING'
+      ) {
+        return;
+      }
+
+      try {
+        await this.generateAiInsights();
+        const generatedInsight = await this.readStoredAiInsight();
+        if (generatedInsight?.sourceRevision !== job.sourceRevision) {
+          throw new ServiceUnavailableException(
+            'No current AI insight was generated for this data revision.',
+          );
+        }
+        await this.updateAiInsightJob(job.sourceRevision, 'COMPLETED');
+      } catch (error) {
+        await this.updateAiInsightJob(
+          job.sourceRevision,
+          'FAILED',
+          AI_INSIGHT_FAILED_MESSAGE,
+        );
+        throw error;
+      }
+    } finally {
+      this.isProcessingAiInsightJob = false;
+    }
+  }
+
+  async getAiInsightJobStatus(
+    dataIsCurrent: boolean,
+  ): Promise<AnalyticsInsightJobStatusResponse> {
+    const [cached, job] = await Promise.all([
+      this.readStoredAiInsight(),
+      this.readStoredAiInsightJob(),
+    ]);
+    if (!dataIsCurrent) {
+      return {
+        state: 'blocked',
+        hasSavedInsight: cached !== null,
+        hasCurrentInsight: false,
+        queuedAt: job?.queuedAt ?? null,
+        runAfter: job?.runAfter ?? null,
+        startedAt: job?.startedAt ?? null,
+        finishedAt: job?.finishedAt ?? null,
+        lastGeneratedAt: cached?.response.evidence.generatedAt ?? null,
+      };
+    }
+
+    const overview = await this.getOverview();
+    const currentRevision = this.insightSourceRevision(overview);
+    const analyticsIsCurrent = !overview.dataSource.isStale;
+    const hasCurrentInsight =
+      analyticsIsCurrent && cached?.sourceRevision === currentRevision;
+
+    let state: AnalyticsInsightJobStatusResponse['state'];
+    if (hasCurrentInsight) {
+      state = 'current';
+    } else if (!analyticsIsCurrent) {
+      state = 'blocked';
+    } else if (job?.sourceRevision !== currentRevision) {
+      state = 'waiting';
+    } else {
+      state =
+        job.status === 'PENDING'
+          ? 'queued'
+          : job.status === 'RUNNING'
+            ? 'generating'
+            : job.status === 'FAILED' || job.status === 'COMPLETED'
+              ? 'failed'
+              : 'waiting';
+    }
+
+    return {
+      state,
+      hasSavedInsight: cached !== null,
+      hasCurrentInsight,
+      queuedAt: job?.queuedAt ?? null,
+      runAfter: job?.runAfter ?? null,
+      startedAt: job?.startedAt ?? null,
+      finishedAt: job?.finishedAt ?? null,
+      lastGeneratedAt: cached?.response.evidence.generatedAt ?? null,
+    };
+  }
+
+  private insightSourceRevision(
+    overview: Awaited<ReturnType<AnalyticsService['getOverview']>>,
+  ): string {
+    const storedRevision = overview.snapshot['sourceRevision'];
+    if (typeof storedRevision === 'string' && storedRevision.length > 0) {
+      return storedRevision;
+    }
+
+    const revision = {
+      sourceMaxUpdatedAt: overview.dataSource.sourceMaxUpdatedAt,
+      totalVehicles: overview.snapshot.totalVehicles,
+      totalSchedules: overview.snapshot.totalSchedules,
+      totalMaintenanceCost: overview.snapshot.totalMaintenanceCost,
+      statusBreakdown: overview.statusBreakdown.map(
+        ({ status, scheduleCount }) => ({ status, scheduleCount }),
+      ),
+    };
+    return createHash('sha256').update(JSON.stringify(revision)).digest('hex');
+  }
+
+  private async readStoredAiInsight(): Promise<StoredAnalyticsInsight | null> {
+    return this.withDataMart(async (connection) => {
+      const rows = await this.query(
+        connection,
+        `SELECT sourceRevision, responseJson
+         FROM analytics_ai_insight_cache
+         WHERE cacheKey = 'latest'`,
+      );
+      if (!rows[0]) return null;
+
+      const responseJson = String(rows[0]['responseJson']);
+      let response: AnalyticsInsightsResponse;
+      try {
+        response = JSON.parse(responseJson) as AnalyticsInsightsResponse;
+      } catch {
+        throw new ServiceUnavailableException(
+          'The stored AI insight is invalid and cannot be loaded.',
+        );
+      }
+      if (
+        typeof response.aiSummary !== 'string' ||
+        typeof response.evidence !== 'object' ||
+        response.evidence === null ||
+        typeof response.evidence.generatedAt !== 'string'
+      ) {
+        throw new ServiceUnavailableException(
+          'The stored AI insight is invalid and cannot be loaded.',
+        );
+      }
+      return {
+        sourceRevision: String(rows[0]['sourceRevision']),
+        response,
+      };
+    });
+  }
+
+  private async storeAiInsight(
+    sourceRevision: string,
+    response: AnalyticsInsightsResponse,
+  ): Promise<void> {
+    await this.withDataMart(async (connection) => {
+      await connection.run(
+        `INSERT INTO analytics_ai_insight_cache
+           (cacheKey, sourceRevision, responseJson, generatedAt)
+         VALUES ('latest', $1, $2, CAST($3 AS TIMESTAMPTZ))
+         ON CONFLICT (cacheKey) DO UPDATE SET
+           sourceRevision = excluded.sourceRevision,
+           responseJson = excluded.responseJson,
+           generatedAt = excluded.generatedAt`,
+        [sourceRevision, JSON.stringify(response), new Date().toISOString()],
+      );
+    });
+  }
+
+  private async readStoredAiInsightJob(): Promise<StoredAnalyticsInsightJob | null> {
+    return this.withDataMart(async (connection) => {
+      const rows = await this.query(
+        connection,
+        `SELECT sourceRevision, status,
+                CAST(queuedAt AS VARCHAR) AS queuedAt,
+                CAST(runAfter AS VARCHAR) AS runAfter,
+                CAST(startedAt AS VARCHAR) AS startedAt,
+                CAST(finishedAt AS VARCHAR) AS finishedAt
+         FROM analytics_ai_insight_jobs
+         WHERE jobKey = 'latest'`,
+      );
+      if (!rows[0]) return null;
+
+      const status = String(rows[0]['status']);
+      if (
+        status !== 'PENDING' &&
+        status !== 'RUNNING' &&
+        status !== 'COMPLETED' &&
+        status !== 'FAILED'
+      ) {
+        throw new ServiceUnavailableException(
+          'The stored AI insight job has an invalid status.',
+        );
+      }
+
+      const nullableString = (value: unknown) =>
+        value === null || value === undefined ? null : String(value);
+      return {
+        sourceRevision: String(rows[0]['sourceRevision']),
+        status,
+        queuedAt: String(rows[0]['queuedAt']),
+        runAfter: String(rows[0]['runAfter']),
+        startedAt: nullableString(rows[0]['startedAt']),
+        finishedAt: nullableString(rows[0]['finishedAt']),
+      };
+    });
+  }
+
+  private async updateAiInsightJob(
+    sourceRevision: string,
+    status: StoredAnalyticsInsightJob['status'],
+    errorMessage: string | null = null,
+  ): Promise<void> {
+    await this.withDataMart(async (connection) => {
+      const now = new Date().toISOString();
+      await connection.run(
+        `UPDATE analytics_ai_insight_jobs
+         SET status = $2,
+             startedAt = CASE
+               WHEN $2 = 'RUNNING' THEN CAST($3 AS TIMESTAMPTZ)
+               ELSE startedAt
+             END,
+             finishedAt = CASE
+               WHEN $2 IN ('COMPLETED', 'FAILED') THEN CAST($3 AS TIMESTAMPTZ)
+               ELSE NULL
+             END,
+             errorMessage = $4
+         WHERE jobKey = 'latest' AND sourceRevision = $1`,
+        [sourceRevision, status, now, errorMessage],
+      );
+    });
+  }
+
+  private async hasAttemptedAiInsightRevision(
+    sourceRevision: string,
+  ): Promise<boolean> {
+    return this.withDataMart(async (connection) => {
+      const result = await connection.runAndReadAll(
+        `SELECT 1
+         FROM analytics_ai_insight_attempt_history
+         WHERE sourceRevision = $1`,
+        [sourceRevision],
+      );
+      return result.getRowObjectsJS().length > 0;
+    });
+  }
+
+  private async markAiInsightAttempted(
+    sourceRevision: string,
+  ): Promise<void> {
+    await this.withDataMart(async (connection) => {
+      await connection.run(
+        `INSERT INTO analytics_ai_insight_attempt_history
+           (sourceRevision, attemptedAt)
+         VALUES ($1, CAST($2 AS TIMESTAMPTZ))
+         ON CONFLICT (sourceRevision) DO NOTHING`,
+        [sourceRevision, new Date().toISOString()],
+      );
+    });
   }
 
   private buildInsightEvidence(
@@ -587,7 +944,7 @@ Format:
   ): Promise<DataMartRow> {
     const rows = await this.query(
       connection,
-      `SELECT snapshotKey,
+      `SELECT snapshotKey, sourceRevision,
               CAST(generatedAt AS VARCHAR) AS generatedAt,
               CAST(sourceMaxUpdatedAt AS VARCHAR) AS sourceMaxUpdatedAt,
               totalVehicles, availableVehicles, underMaintenanceVehicles,

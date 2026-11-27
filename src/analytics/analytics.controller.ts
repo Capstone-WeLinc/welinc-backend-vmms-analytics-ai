@@ -1,5 +1,8 @@
 import { Body, Controller, Get, Param, Post, Query, ServiceUnavailableException } from '@nestjs/common';
-import { AnalyticsService } from './analytics.service';
+import {
+  AnalyticsService,
+  type AnalyticsInsightJobStatusResponse,
+} from './analytics.service';
 import { SyncService } from './sync.service';
 import { AnalyticsAccess } from '../auth/analytics-access';
 
@@ -72,6 +75,14 @@ export class AnalyticsController {
   async getAiInsightsLegacy() {
     const dataHealth = await this.syncService.getDataHealth();
     return this.analyticsService.getAiInsights(dataHealth.state === 'current');
+  }
+
+  @Get(['insights/status', 'analytics/insights/status'])
+  async getAiInsightJobStatus(): Promise<AnalyticsInsightJobStatusResponse> {
+    const dataHealth = await this.syncService.getDataHealth();
+    return this.analyticsService.getAiInsightJobStatus(
+      dataHealth.state === 'current',
+    );
   }
 
   @Get('alerts')
